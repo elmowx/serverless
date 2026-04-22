@@ -1,0 +1,771 @@
+"""
+Three-page A4 PDF summary of a finished run.
+
+Page 1 — performance:
+    1. Title + run metadata.
+    2. Four top-line metrics (p99, cold-start rate, p_loss, idle).
+    3. Best policy card (three policy parameters + f(x)).
+    4. Baseline comparison table (your best + named baselines).
+    5. Convergence plot (best_so_far + raw y).
+
+Page 2 — cost decomposition:
+    1. Stacked bars of w_lat·latency_term and w_cost·cost_term per policy.
+    2. Signed Δ table: your_best minus each baseline on the key axes.
+
+Page 3 — container state Gantt:
+    Real simulated timeline of each container under the best policy, with
+    colour-coded FREE / WARMING_UP / BUSY / IDLE segments.
+
+Single module, single public function `render_report_pdf(report, run_id) -> bytes`.
+"""
+
+from __future__ import annotations
+
+import io
+from typing import Any
+
+from reportlab.lib.colors import HexColor
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.units import mm
+from reportlab.pdfgen import canvas
+
+
+INK = HexColor("#1f1b16")
+MUTED = HexColor("#8a8278")
+ACCENT = HexColor("#ff8a5b")
+TEAL = HexColor("#3a8a8c")
+WARM = HexColor("#f3ead8")
+PAPER = HexColor("#fbf7ee")
+HAIRLINE = HexColor("#d8cfbe")
+OK = HexColor("#156d38")
+BAD = HexColor("#9c2f2f")
+TAN = HexColor("#c59a4a")
+# Gantt segment palette mirrors the frontend (ContainerTimeline.tsx).
+STATE_COLORS = {
+    "busy": ACCENT,
+    "idle": TEAL,
+    "warming_up": TAN,
+    "free": HexColor("#e6dfce"),
+}
+STATE_LABELS = {
+    "busy": "BUSY",
+    "idle": "IDLE",
+    "warming_up": "WARMING_UP",
+    "free": "FREE",
+}
+
+
+def render_report_pdf(report: dict[str, Any], run_id: str) -> bytes:
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=A4)
+    W, H = A4
+    margin = 15 * mm
+
+    timeline = report.get("container_timeline") or None
+    has_timeline = bool(timeline and timeline.get("tracks"))
+    total_pages = 3 if has_timeline else 2
+
+    _render_performance_page(c, report, run_id, W, H, margin, total_pages)
+    c.showPage()
+    _render_cost_page(c, report, W, H, margin, total_pages)
+    if has_timeline:
+        c.showPage()
+        _render_timeline_page(c, timeline, W, H, margin, total_pages)
+    c.save()
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Page 1: performance
+# ---------------------------------------------------------------------------
+
+
+def _render_performance_page(
+    c: canvas.Canvas,
+    report: dict[str, Any],
+    run_id: str,
+    W: float,
+    H: float,
+    margin: float,
+    total_pages: int = 2,
+) -> None:
+    y = H - margin
+
+    # --- Header ---
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(margin, y, "Serverless Black-Box — Run Report")
+    y -= 6 * mm
+
+    cfg = report.get("config") or {}
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 8)
+    c.drawString(margin, y, f"run_id: {run_id}")
+    y -= 4 * mm
+    config_line = (
+        f"w_latency={cfg.get('w_latency', 0):.2f}   "
+        f"w_cost={cfg.get('w_cost', 0):.2f}   "
+        f"seed={cfg.get('seed', 0)}   "
+        f"trials={report.get('n_trials', '—')}   "
+        f"elapsed={report.get('elapsed_s', 0):.1f}s"
+    )
+    c.drawString(margin, y, config_line)
+    y -= 8 * mm
+
+    # --- Top-line metric boxes ---
+    m = report.get("best_metrics") or {}
+    metrics = [
+        ("p99 latency", f"{m.get('p99_latency_ms', 0):.0f} ms"),
+        ("cold start rate", f"{m.get('cold_start_rate', 0) * 100:.1f} %"),
+        ("p_loss", f"{m.get('p_loss', 0) * 100:.2f} %"),
+        ("idle (cont·s)", f"{m.get('idle_seconds', 0):.0f}"),
+    ]
+    gap = 3 * mm
+    box_w = (W - 2 * margin - 3 * gap) / 4
+    box_h = 18 * mm
+    for i, (label, value) in enumerate(metrics):
+        x0 = margin + i * (box_w + gap)
+        c.setFillColor(WARM)
+        c.rect(x0, y - box_h, box_w, box_h, stroke=0, fill=1)
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica", 7)
+        c.drawString(x0 + 3 * mm, y - 5 * mm, label.upper())
+        c.setFillColor(INK)
+        c.setFont("Helvetica-Bold", 14)
+        c.drawString(x0 + 3 * mm, y - 13 * mm, value)
+    y -= box_h + 8 * mm
+
+    # --- Best policy card ---
+    best_x = report.get("best_x") or [0, 0, 0]
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(margin, y, "Best policy")
+    y -= 5 * mm
+    card_h = 16 * mm
+    c.setFillColor(WARM)
+    c.rect(margin, y - card_h, W - 2 * margin, card_h, stroke=0, fill=1)
+    # Thin accent band on the left edge to mark the user's row.
+    c.setFillColor(ACCENT)
+    c.rect(margin, y - card_h, 2 * mm, card_h, stroke=0, fill=1)
+
+    labels = [
+        ("keep_alive_s", f"{best_x[0]:.1f}"),
+        ("max_containers", f"{int(round(best_x[1]))}"),
+        ("prewarm_threshold", f"{best_x[2]:.2f}"),
+        ("f(x)", f"{report.get('best_y', 0):.4f}"),
+    ]
+    cell_w = (W - 2 * margin) / 4
+    for i, (label, value) in enumerate(labels):
+        x0 = margin + i * cell_w
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica", 7)
+        c.drawString(x0 + 5 * mm, y - 5 * mm, label.upper())
+        c.setFillColor(INK)
+        c.setFont("Helvetica-Bold", 13)
+        c.drawString(x0 + 5 * mm, y - 12 * mm, value)
+    y -= card_h + 8 * mm
+
+    # --- Baselines table ---
+    y = _draw_baseline_table(c, report, m, W, margin, y)
+    y -= 6 * mm
+
+    # --- Convergence plot (fills the remaining page) ---
+    _draw_convergence(c, report, W, margin, y)
+
+    # --- Footer ---
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 6)
+    c.drawString(
+        margin,
+        margin / 2,
+        f"generated by serverless-blackbox — page 1/{total_pages}",
+    )
+
+
+def _draw_baseline_table(
+    c: canvas.Canvas,
+    report: dict[str, Any],
+    best_m: dict[str, Any],
+    W: float,
+    margin: float,
+    y: float,
+) -> float:
+    """Draw the baseline comparison table. Returns the new y cursor."""
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(margin, y, "Baseline comparison")
+    y -= 6 * mm
+
+    # Column right-edges, evenly packed so the whole table fits in the content
+    # width. The first column ("policy") is left-aligned at `margin`.
+    name_left = margin
+    numeric_right_edges = _even_right_edges(
+        left=margin + 55 * mm, right=W - margin, n=5
+    )
+    headers = ["policy", "f(x)", "p99 ms", "cold %", "p_loss %", "idle s"]
+
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(name_left, y, headers[0].upper())
+    for re, h in zip(numeric_right_edges, headers[1:]):
+        c.drawRightString(re, y, h.upper())
+    y -= 2 * mm
+    c.setStrokeColor(HAIRLINE)
+    c.setLineWidth(0.4)
+    c.line(margin, y, W - margin, y)
+    y -= 5 * mm
+
+    rows: list[tuple[str, float, dict[str, Any], bool]] = [
+        ("YOUR BEST", report.get("best_y", 0), best_m, True),
+    ]
+    for b in report.get("baselines") or []:
+        rows.append((b["name"], b["y"], b["metrics"], False))
+
+    row_h = 5 * mm
+    for name, y_val, row_m, highlight in rows:
+        if highlight:
+            c.setFillColor(WARM)
+            c.rect(
+                margin,
+                y - row_h + 3 * mm,
+                W - 2 * margin,
+                row_h,
+                stroke=0,
+                fill=1,
+            )
+            c.setFillColor(INK)
+            c.setFont("Helvetica-Bold", 8)
+        else:
+            c.setFillColor(INK)
+            c.setFont("Helvetica", 8)
+        c.drawString(name_left, y, name)
+        values = [
+            f"{y_val:.4f}",
+            f"{row_m.get('p99_latency_ms', 0):.0f}",
+            f"{row_m.get('cold_start_rate', 0) * 100:.1f}",
+            f"{row_m.get('p_loss', 0) * 100:.2f}",
+            f"{row_m.get('idle_seconds', 0):.0f}",
+        ]
+        for re, v in zip(numeric_right_edges, values):
+            c.drawRightString(re, y, v)
+        y -= row_h
+
+    return y
+
+
+def _draw_convergence(
+    c: canvas.Canvas, report: dict[str, Any], W: float, margin: float, y: float
+) -> None:
+    conv = report.get("convergence") or []
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(margin, y, "Convergence (best_so_far)")
+    y -= 6 * mm
+
+    plot_w = W - 2 * margin
+    # Fill (most of) the remaining space down to the footer. Measured from the
+    # current y down to 15mm above the page bottom for the footer.
+    plot_h = max(50 * mm, y - 15 * mm)
+    plot_x = margin
+    plot_y = y - plot_h
+
+    c.setFillColor(PAPER)
+    c.rect(plot_x, plot_y, plot_w, plot_h, stroke=0, fill=1)
+    c.setStrokeColor(HAIRLINE)
+    c.setLineWidth(0.3)
+    c.rect(plot_x, plot_y, plot_w, plot_h, stroke=1, fill=0)
+
+    if len(conv) < 2:
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica-Oblique", 8)
+        c.drawString(plot_x + 3 * mm, plot_y + plot_h / 2, "insufficient data")
+        return
+
+    xs = [p["trial"] for p in conv]
+    ys_best = [p["best_so_far"] for p in conv]
+    ys_raw = [p["y"] for p in conv]
+    x_min, x_max = min(xs), max(xs)
+    y_min = min(min(ys_raw), min(ys_best))
+    y_max = max(max(ys_raw), max(ys_best))
+    if y_max == y_min:
+        y_max = y_min + 1e-6
+
+    # Inner padding so points don't kiss the border.
+    pad = 4 * mm
+    ix = plot_x + pad
+    iy = plot_y + pad
+    iw = plot_w - 2 * pad
+    ih = plot_h - 2 * pad
+
+    def px(t: float) -> float:
+        return ix + (t - x_min) / (x_max - x_min) * iw
+
+    def py(v: float) -> float:
+        return iy + (v - y_min) / (y_max - y_min) * ih
+
+    # Horizontal grid (4 bands).
+    c.setStrokeColor(HAIRLINE)
+    c.setLineWidth(0.2)
+    for i in range(1, 4):
+        yg = iy + ih * i / 4
+        c.line(ix, yg, ix + iw, yg)
+
+    # Raw per-trial y (muted polyline).
+    c.setStrokeColor(MUTED)
+    c.setLineWidth(0.5)
+    path = c.beginPath()
+    path.moveTo(px(xs[0]), py(ys_raw[0]))
+    for t, v in zip(xs[1:], ys_raw[1:]):
+        path.lineTo(px(t), py(v))
+    c.drawPath(path, stroke=1, fill=0)
+
+    # Best-so-far (accent).
+    c.setStrokeColor(ACCENT)
+    c.setLineWidth(1.4)
+    path = c.beginPath()
+    path.moveTo(px(xs[0]), py(ys_best[0]))
+    for t, v in zip(xs[1:], ys_best[1:]):
+        path.lineTo(px(t), py(v))
+    c.drawPath(path, stroke=1, fill=0)
+
+    # Y-axis labels.
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 6)
+    c.drawString(plot_x + 1 * mm, plot_y + plot_h - 4 * mm, f"y_max={y_max:.4f}")
+    c.drawString(plot_x + 1 * mm, plot_y + 2 * mm, f"y_min={y_min:.4f}")
+    c.drawRightString(
+        plot_x + plot_w - 1 * mm, plot_y + 2 * mm, f"trials={x_max}"
+    )
+
+    # Small legend.
+    lx = plot_x + 2 * mm
+    ly = plot_y + plot_h - 4 * mm
+    c.setStrokeColor(ACCENT)
+    c.setLineWidth(1.4)
+    c.line(lx + 30 * mm, ly + 1 * mm, lx + 36 * mm, ly + 1 * mm)
+    c.setFillColor(INK)
+    c.drawString(lx + 37 * mm, ly, "best_so_far")
+    c.setStrokeColor(MUTED)
+    c.setLineWidth(0.5)
+    c.line(lx + 58 * mm, ly + 1 * mm, lx + 64 * mm, ly + 1 * mm)
+    c.setFillColor(INK)
+    c.drawString(lx + 65 * mm, ly, "per-trial y")
+
+
+# ---------------------------------------------------------------------------
+# Page 2: cost decomposition
+# ---------------------------------------------------------------------------
+
+
+def _render_cost_page(
+    c: canvas.Canvas,
+    report: dict[str, Any],
+    W: float,
+    H: float,
+    margin: float,
+    total_pages: int = 2,
+) -> None:
+    """Page 2: objective decomposition + Δ vs baselines.
+
+    The first page answers "how well did you do?". This page answers "where
+    did the improvement come from?" — splitting f(x) into latency_term and
+    cost_term contributions and showing signed deltas vs each baseline.
+    """
+    y = H - margin
+
+    config = report.get("config") or {}
+    w_lat = float(config.get("w_latency", 0.5))
+    w_cost = float(config.get("w_cost", 0.5))
+
+    best_m = report.get("best_metrics") or {}
+    best_y = float(report.get("best_y", 0.0))
+    baselines = report.get("baselines") or []
+
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(margin, y, "Cost & objective decomposition")
+    y -= 6 * mm
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 8)
+    c.drawString(
+        margin,
+        y,
+        f"f(x) = w_lat · latency_term + w_cost · cost_term   "
+        f"(w_lat={w_lat:.2f}, w_cost={w_cost:.2f}). Lower is better.",
+    )
+    y -= 10 * mm
+
+    # --- Stacked bars ---
+    rows: list[tuple[str, float, float, float, bool]] = [
+        (
+            "YOUR BEST",
+            best_y,
+            float(best_m.get("latency_term", 0.0)),
+            float(best_m.get("cost_term", 0.0)),
+            True,
+        )
+    ]
+    for b in baselines:
+        bm = b.get("metrics") or {}
+        rows.append(
+            (
+                str(b.get("name", "?")),
+                float(b.get("y", 0.0)),
+                float(bm.get("latency_term", 0.0)),
+                float(bm.get("cost_term", 0.0)),
+                False,
+            )
+        )
+    max_y = max((r[1] for r in rows), default=1.0) or 1.0
+
+    label_w = 40 * mm
+    value_w = 22 * mm
+    bar_x = margin + label_w
+    bar_w_total = W - margin - value_w - bar_x
+    bar_h = 7 * mm
+    row_step = bar_h + 6 * mm
+
+    # Header row
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(margin, y, "POLICY")
+    c.drawString(bar_x, y, "LATENCY + COST CONTRIBUTION")
+    c.drawRightString(W - margin, y, "f(x)")
+    y -= 2 * mm
+    c.setStrokeColor(HAIRLINE)
+    c.setLineWidth(0.4)
+    c.line(margin, y, W - margin, y)
+    y -= 4 * mm
+
+    scale = bar_w_total / max_y
+    for name, y_val, lat_term, cost_term, highlight in rows:
+        lat_part = w_lat * lat_term
+        cost_part = w_cost * cost_term
+
+        bar_bot = y - bar_h / 2
+        if highlight:
+            c.setFillColor(WARM)
+            c.rect(
+                margin,
+                bar_bot - 1 * mm,
+                W - 2 * margin,
+                bar_h + 2 * mm,
+                stroke=0,
+                fill=1,
+            )
+
+        # Policy name, vertically centred on the bar.
+        c.setFillColor(INK)
+        c.setFont("Helvetica-Bold" if highlight else "Helvetica", 9)
+        c.drawString(margin, y - 1 * mm, name)
+
+        # The bar itself.
+        lat_w = lat_part * scale
+        cost_w = cost_part * scale
+        c.setFillColor(ACCENT)
+        c.rect(bar_x, bar_bot, lat_w, bar_h, stroke=0, fill=1)
+        c.setFillColor(TEAL)
+        c.rect(bar_x + lat_w, bar_bot, cost_w, bar_h, stroke=0, fill=1)
+
+        # Inline contribution labels drawn on top of each segment, only when
+        # the segment is wide enough to fit a 3-char number without overlap.
+        c.setFont("Helvetica-Bold", 7)
+        if lat_w > 10 * mm:
+            c.setFillColor(PAPER)
+            c.drawString(bar_x + 1.5 * mm, y - 1 * mm, f"{lat_part:.3f}")
+        if cost_w > 10 * mm:
+            c.setFillColor(PAPER)
+            c.drawString(bar_x + lat_w + 1.5 * mm, y - 1 * mm, f"{cost_part:.3f}")
+
+        # f(x) on the right.
+        c.setFillColor(INK)
+        c.setFont("Helvetica-Bold" if highlight else "Helvetica", 9)
+        c.drawRightString(W - margin, y - 1 * mm, f"{y_val:.4f}")
+
+        y -= row_step
+
+    # Legend
+    y -= 1 * mm
+    c.setFillColor(ACCENT)
+    c.rect(margin, y - 2 * mm, 4 * mm, 3 * mm, stroke=0, fill=1)
+    c.setFillColor(INK)
+    c.setFont("Helvetica", 8)
+    c.drawString(margin + 6 * mm, y - 1 * mm, "w_lat · latency_term")
+    c.setFillColor(TEAL)
+    c.rect(margin + 60 * mm, y - 2 * mm, 4 * mm, 3 * mm, stroke=0, fill=1)
+    c.setFillColor(INK)
+    c.drawString(margin + 66 * mm, y - 1 * mm, "w_cost · cost_term")
+    y -= 12 * mm
+
+    # --- Impact vs baselines table ---
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(margin, y, "Impact vs baselines")
+    y -= 5 * mm
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 8)
+    c.drawString(
+        margin,
+        y,
+        "Δ = your_best − baseline. Green = your optimizer is better on that "
+        "dimension (lower is better everywhere).",
+    )
+    y -= 7 * mm
+
+    name_left = margin
+    numeric_right_edges = _even_right_edges(
+        left=margin + 45 * mm, right=W - margin, n=5
+    )
+    headers = ["vs", "Δ f(x)", "Δ p99 (ms)", "Δ idle (s)", "Δ cost_term", "Δ lat_term"]
+
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica-Bold", 7)
+    c.drawString(name_left, y, headers[0].upper())
+    for re, h in zip(numeric_right_edges, headers[1:]):
+        c.drawRightString(re, y, h.upper())
+    y -= 2 * mm
+    c.setStrokeColor(HAIRLINE)
+    c.setLineWidth(0.4)
+    c.line(margin, y, W - margin, y)
+    y -= 5 * mm
+
+    def draw_signed(re: float, yy: float, v: float, digits: int) -> None:
+        if abs(v) < 10 ** (-digits) / 2:
+            color, text = MUTED, f"{0.0:+.{digits}f}"
+        elif v < 0:
+            color, text = OK, f"{v:+.{digits}f}"
+        else:
+            color, text = BAD, f"{v:+.{digits}f}"
+        c.setFillColor(color)
+        c.drawRightString(re, yy, text)
+
+    c.setFont("Helvetica", 9)
+    for b in baselines:
+        bm = b.get("metrics") or {}
+        name = str(b.get("name", "?"))
+        by = float(b.get("y", 0.0))
+        d_f = best_y - by
+        d_p99 = float(best_m.get("p99_latency_ms", 0.0)) - float(
+            bm.get("p99_latency_ms", 0.0)
+        )
+        d_idle = float(best_m.get("idle_seconds", 0.0)) - float(
+            bm.get("idle_seconds", 0.0)
+        )
+        d_cost = float(best_m.get("cost_term", 0.0)) - float(
+            bm.get("cost_term", 0.0)
+        )
+        d_lat = float(best_m.get("latency_term", 0.0)) - float(
+            bm.get("latency_term", 0.0)
+        )
+        c.setFillColor(INK)
+        c.drawString(name_left, y, name)
+        deltas = [(d_f, 4), (d_p99, 0), (d_idle, 0), (d_cost, 4), (d_lat, 4)]
+        for re, (v, digits) in zip(numeric_right_edges, deltas):
+            draw_signed(re, y, v, digits)
+        y -= 6 * mm
+
+    # --- Footer ---
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 6)
+    c.drawString(
+        margin,
+        margin / 2,
+        f"generated by serverless-blackbox — page 2/{total_pages}",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Page 3: container state Gantt
+# ---------------------------------------------------------------------------
+
+
+def _render_timeline_page(
+    c: canvas.Canvas,
+    timeline: dict[str, Any],
+    W: float,
+    H: float,
+    margin: float,
+    total_pages: int,
+) -> None:
+    """Gantt chart of per-container FSM states over simulated time.
+
+    Mirrors the styling of `ContainerTimeline.tsx` on the web report: one
+    row per container, segments coloured by state. We don't draw a tooltip
+    (PDF has no interaction), but we do draw a small legend strip and a
+    time axis with a handful of "nice" ticks.
+    """
+    y = H - margin
+
+    c.setFillColor(INK)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(margin, y, "Container state timeline (best policy)")
+    y -= 6 * mm
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 8)
+    total_ms = float(timeline.get("total_ms", 0.0))
+    n_containers = int(timeline.get("n_containers", 0))
+    shown = int(timeline.get("shown_containers", len(timeline.get("tracks") or [])))
+    c.drawString(
+        margin,
+        y,
+        f"Real simulated timeline; {shown} of {n_containers} containers shown. "
+        f"Total {_fmt_duration(total_ms)}.",
+    )
+    y -= 7 * mm
+
+    # --- Legend ---
+    legend_items = [("busy", "BUSY"), ("idle", "IDLE"),
+                    ("warming_up", "WARMING_UP"), ("free", "FREE")]
+    lx = margin
+    for key, label in legend_items:
+        c.setFillColor(STATE_COLORS[key])
+        c.rect(lx, y - 2.5 * mm, 4 * mm, 3 * mm, stroke=0, fill=1)
+        c.setFillColor(INK)
+        c.setFont("Helvetica", 8)
+        c.drawString(lx + 5 * mm, y - 1 * mm, label)
+        lx += 28 * mm
+    y -= 8 * mm
+
+    # --- Plot area ---
+    tracks = timeline.get("tracks") or []
+    if not tracks or total_ms <= 0:
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica-Oblique", 8)
+        c.drawString(margin, y, "no timeline data")
+        _draw_footer(c, margin, 3, total_pages)
+        return
+
+    label_w = 12 * mm
+    plot_x = margin + label_w
+    plot_w = W - margin - plot_x
+    row_h = 4.5 * mm
+    row_gap = 1.2 * mm
+    # Leave ~20mm at the bottom for the time axis + footer.
+    available_h = y - (margin + 20 * mm)
+    needed_h = len(tracks) * (row_h + row_gap) - row_gap
+    if needed_h > available_h:
+        scale = available_h / needed_h
+        row_h *= scale
+        row_gap *= scale
+        needed_h = len(tracks) * (row_h + row_gap) - row_gap
+
+    plot_top = y
+    plot_bottom = plot_top - needed_h
+
+    # Plot background + frame
+    c.setFillColor(PAPER)
+    c.rect(plot_x, plot_bottom, plot_w, needed_h, stroke=0, fill=1)
+    c.setStrokeColor(HAIRLINE)
+    c.setLineWidth(0.3)
+    c.rect(plot_x, plot_bottom, plot_w, needed_h, stroke=1, fill=0)
+
+    # Tick lines + labels
+    ticks = _nice_ticks(total_ms, target=6)
+    c.setStrokeColor(HAIRLINE)
+    c.setLineWidth(0.2)
+    for tval, _ in ticks:
+        tx = plot_x + (tval / total_ms) * plot_w
+        c.line(tx, plot_bottom, tx, plot_top)
+
+    # Segments
+    for i, track in enumerate(tracks):
+        row_top = plot_top - i * (row_h + row_gap)
+        row_bottom = row_top - row_h
+
+        # Container label in the gutter
+        c.setFillColor(MUTED)
+        c.setFont("Helvetica", 6)
+        c.drawRightString(
+            plot_x - 1.5 * mm, row_bottom + row_h / 2 - 1.5, f"c{track['container_id']}"
+        )
+
+        for seg in track.get("segments") or []:
+            state = str(seg.get("state", "free"))
+            t0 = float(seg.get("t0_ms", 0.0))
+            t1 = float(seg.get("t1_ms", 0.0))
+            if t1 <= t0:
+                continue
+            x0 = plot_x + (t0 / total_ms) * plot_w
+            x1 = plot_x + (t1 / total_ms) * plot_w
+            seg_w = max(0.1, x1 - x0)
+            c.setFillColor(STATE_COLORS.get(state, STATE_COLORS["free"]))
+            c.rect(x0, row_bottom, seg_w, row_h, stroke=0, fill=1)
+
+    # X-axis tick labels
+    axis_y = plot_bottom - 4 * mm
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 7)
+    for tval, tlabel in ticks:
+        tx = plot_x + (tval / total_ms) * plot_w
+        c.drawCentredString(tx, axis_y, tlabel)
+    c.drawCentredString(
+        plot_x + plot_w / 2,
+        axis_y - 5 * mm,
+        f"simulated time ({'seconds' if total_ms <= 120_000 else 'minutes'})",
+    )
+
+    _draw_footer(c, margin, 3, total_pages)
+
+
+def _draw_footer(c: canvas.Canvas, margin: float, page_idx: int, total: int) -> None:
+    c.setFillColor(MUTED)
+    c.setFont("Helvetica", 6)
+    c.drawString(
+        margin,
+        margin / 2,
+        f"generated by serverless-blackbox — page {page_idx}/{total}",
+    )
+
+
+def _nice_ticks(total_ms: float, *, target: int = 6) -> list[tuple[float, str]]:
+    """Pick `target`-ish "nice" tick positions along [0, total_ms]. Units are
+    seconds for short simulations, minutes otherwise."""
+    if total_ms <= 0:
+        return [(0.0, "0")]
+    unit_s = total_ms <= 120_000
+    span = 1000.0 if unit_s else 60_000.0
+    raw_units = (total_ms / max(1, target)) / span
+    for candidate in (1, 2, 5, 10, 15, 30, 60):
+        if candidate >= raw_units:
+            step_units = candidate
+            break
+    else:
+        step_units = 60
+    step = step_units * span
+    values: list[float] = []
+    v = 0.0
+    while v <= total_ms + 1e-6:
+        values.append(v)
+        v += step
+    if values[-1] < total_ms:
+        values.append(total_ms)
+
+    def label(ms: float) -> str:
+        if unit_s:
+            return f"{ms / 1000:.0f}s"
+        return f"{ms / 60_000:.0f}m"
+
+    return [(ms, label(ms)) for ms in values]
+
+
+def _fmt_duration(ms: float) -> str:
+    if ms < 1000:
+        return f"{ms:.0f} ms"
+    if ms < 60_000:
+        return f"{ms / 1000:.1f} s"
+    m = int(ms // 60_000)
+    s = int(round((ms % 60_000) / 1000))
+    return f"{m}m {s:02d}s"
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _even_right_edges(left: float, right: float, n: int) -> list[float]:
+    """Return `n` right-edge x-coordinates for numeric columns between `left`
+    and `right`, evenly spaced so no value overflows the content area."""
+    width = right - left
+    step = width / n
+    return [left + step * (i + 1) for i in range(n)]

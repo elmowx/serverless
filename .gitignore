@@ -1,0 +1,40 @@
+.DS_Store
+Thumbs.db
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+node_modules/
+dist/
+.vite/
+.vscode/
+.idea/
+
+# logs & temporary files
+*.log
+logs/
+log/
+tmp/
+temp/
+*.tmp
+*.temp
+*.swp
+*~
+*.bak
+*.pid
+*.out
+.cache/
+
+# Markdown: только README.md в корне репозитория
+*.md
+!/README.md
+
+# Claude (Cursor / Claude Code)
+.claude/
+
+report/
+Data/
+runs_data/

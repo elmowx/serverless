@@ -1,0 +1,34 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+    container_name: serverless-blackbox-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist job dirs + sqlite across container restarts (optional).
+      - backend_runs:/tmp/serverless_blackbox_runs
+    # Healthcheck: the API ships a trivial datasets/available endpoint we
+    # can poll to know the app is live.
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/datasets/available', timeout=2).read()\""]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: serverless-blackbox-frontend
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  backend_runs:
