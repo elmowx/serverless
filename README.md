@@ -2,7 +2,7 @@
 
 A benchmarking harness for serverless function scheduling. The simulator collapses a workload trace into a scalar `f(x)` so any derivative-free optimizer can be plugged in and compared against five fixed baselines.
 
-Course context: HSE coursework "Benchmarking Black-Box for Serverless Function Scheduling and Cold Start Mitigation" (`report/final_report.tex`).
+HSE coursework "Benchmarking Black-Box for Serverless Function Scheduling and Cold Start Mitigation"
 
 ---
 
@@ -22,7 +22,7 @@ pip install -e ".[api,dev]"
 uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
 
-Swagger at <http://127.0.0.1:8000/docs>.
+Swagger at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 
 ### Frontend
 
@@ -67,6 +67,7 @@ def optimize(
 `max_wait_ms` is a fixed hyperparameter of the run (default 30000 ms): requests that find no free container join a global FIFO queue and are rejected if they wait longer than `max_wait_ms`. Wait time is part of the per-request latency in `CVaR_0.99`. Setting `max_wait_ms = 0` reverts to a strict G/G/k/k loss queue.
 
 Reference optimizers in `examples/`:
+
 - `user_optimizer_random.py` — uniform random search.
 - `user_optimizer_de.py` — `scipy.optimize.differential_evolution`.
 - `user_optimizer_super.py` — Optuna TPE.
@@ -86,20 +87,12 @@ python -m cli run \
 ```
 
 Useful flags:
+
 - `--source {poisson,flow,upload}` — for `upload` pass `--trace-csv path/to/user.csv`.
 - `--dataset-id <sha16>` — reuse weights from `POST /datasets/fit-flow`.
 - `--max-wait-ms <ms>` — waiting-queue SLA (default 30000).
 - `--output-dir ./runs/my_exp` — keep `progress.jsonl` and `report.json`.
 - `--no-sandbox` — inline run, no subprocess, no rlimits.
-
----
-
-## Threshold sweep experiment
-
-`report/scripts/threshold_sweep.py` runs DE × 5 seeds × 6 values of `max_wait_ms`, records `(loss, p_loss)` for each cell, and produces:
-- `report/data/threshold_sweep.csv` — raw 30 rows.
-- `report/figures/loss_vs_rejection.png` — twin-axis plot.
-- `report/threshold_sweep_results.md` — write-up with table and interpretation.
 
 ---
 
@@ -123,4 +116,3 @@ Useful flags:
 - Azure Functions traces: Shahrad et al., 2020.
 - Huawei SIR-Lab 2025 cold-start dataset: Lin et al., 2025.
 
-Full bibliography in `report/final_report.tex`.
