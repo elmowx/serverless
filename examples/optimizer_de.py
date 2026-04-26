@@ -1,24 +1,3 @@
-"""
-Reference solver based on scipy.optimize.differential_evolution.
-
-Strategy:
-    Population-based stochastic search. With popsize=5 and a 3-dim cube,
-    each generation costs 5 objective calls; we set maxiter so that the
-    total number of evaluations equals exactly ``budget``. Uses a Sobol
-    init for an even first generation, polish=False so we don't waste a
-    final L-BFGS-B run on top, and seed=0 for reproducibility.
-
-    DE has no native budget cap, so we wrap ``objective`` with a counter
-    and raise ``_BudgetExhausted`` on the (budget+1)-th call. The exception
-    propagates out of ``differential_evolution``; we catch it, return the
-    best vector seen so far, and let the runner do the final
-    re-simulation.
-
-Why DE: the advisor wants a baseline reference optimizer that is not TPE.
-DE is the canonical scipy black-box choice; it makes a fair comparison
-against the Optuna-based ``user_optimizer_super.py``.
-"""
-
 from __future__ import annotations
 
 import numpy as np
