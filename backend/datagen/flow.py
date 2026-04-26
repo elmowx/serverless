@@ -1,19 +1,3 @@
-"""
-Runtime generator backed by the conditional RealNVP weights produced by
-`datagen.train_flow`. Shipped only if the offline KS-gate passes; otherwise
-`FlowGenerator.is_available()` returns False and the API surface degrades to
-PoissonGenerator.
-
-Public API mirrors PoissonGenerator:
-    FlowGenerator().generate(intensity, duration_minutes, n_functions, seed)
-        -> list[RequestArrival]
-
-The slider `intensity` doesn't appear in the training conditioning (we only
-have one day of data). Instead it rescales the aggregate arrival rate to the
-same [1, 50] RPS range PoissonGenerator uses, so both sources are comparable
-on the UI.
-"""
-
 from __future__ import annotations
 
 import json
@@ -32,10 +16,6 @@ META_PATH = WEIGHTS_DIR / "flow_v1_meta.json"
 LAMBDA_MIN = 1.0
 LAMBDA_MAX = 50.0
 
-# Max absolute temporal jitter (ms) applied to bootstrapped copies when
-# the requested intensity exceeds what the flow natively produces. Kept
-# small (5 s) so the diurnal envelope and function-burstiness are not
-# blurred across hour boundaries.
 _BOOTSTRAP_JITTER_MS = 5_000.0
 
 
@@ -68,11 +48,8 @@ class FlowGenerator:
         return WEIGHTS_PATH.is_file() and META_PATH.is_file()
 
     def _prime_model(self) -> None:
-        """probaforms' RealNVP lazily builds its sub-modules on first fit/sample.
-        We need the nn.Parameters allocated before loading state_dict."""
         dummy_X = np.zeros((2, int(self._meta["x_dim"])), dtype=np.float32)
         dummy_C = np.zeros((2, int(self._meta["cond_dim"])), dtype=np.float32)
-        # n_epochs was set during training; override to 0 here so fit builds but skips updates.
         self._model.n_epochs = 0
         self._model.fit(dummy_X, dummy_C)
 
@@ -116,13 +93,8 @@ class FlowGenerator:
         counts_raw = np.clip(np.expm1(sampled[:, 0]), 0.0, None)
         execs = np.clip(np.expm1(sampled[:, 1]), 0.0, None)
 
-        # 1. Sample native counts without intensity scaling so the
-        #    (count, avg_exec_time) joint learned by the flow is preserved
-        #    inside each (minute, function_id) bucket.
         counts_native = rng.poisson(counts_raw)
 
-        # 2. Materialize the native arrival list, one request per arrival,
-        #    with per-request exponential execution time around the bucket mean.
         func_ids = [f"f{i:03d}" for i in range(n_functions)]
         native: list[RequestArrival] = []
         for minute in range(duration_minutes):
@@ -148,10 +120,6 @@ class FlowGenerator:
         if not native:
             return []
 
-        # 3. Apply intensity via per-arrival Bernoulli thinning (scale ≤ 1)
-        #    or bootstrap with small temporal jitter (scale > 1). This
-        #    keeps the exec_time marginal intact — unlike the old
-        #    post-hoc count-rescaling which broke the bucket-level joint.
         native_rps = len(native) / (duration_minutes * 60.0)
         scale = target_rps / native_rps if native_rps > 0 else 0.0
         if scale <= 0.0:

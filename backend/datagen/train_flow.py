@@ -1,25 +1,3 @@
-"""
-Offline training: conditional RealNVP on the Huawei day-1 trace aggregate.
-
-Input:
-    Data/normalized/events_d01.csv   (minute, function_id, count, avg_exec_time_ms, ...)
-
-Target X (2-dim):
-    [log1p(count), log1p(avg_exec_time_ms)]
-
-Condition C (3-dim):
-    [function_rank_norm, hour_sin, hour_cos]
-        function_rank_norm = rank / (N-1) where rank=0 is the most popular function.
-        hour_sin = sin(2 pi * hour / 24), hour_cos = cos(2 pi * hour / 24).
-
-Train -> KS-gate on marginals of X at held-out conditions. If both marginals
-pass p > KS_P_THRESHOLD, save weights/flow_v1.pt and weights/flow_v1_meta.json.
-Otherwise: leave weights/ untouched and exit non-zero.
-
-Usage:
-    python -m datagen.train_flow [--n-epochs 30] [--sample-size 2000]
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -38,7 +16,6 @@ WEIGHTS_DIR = Path(__file__).resolve().parents[1] / "weights"
 
 
 def load_rows(path: Path) -> tuple[list[str], np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Return (sorted_fids_desc, minute_arr, count_arr, exec_arr, fid_arr_per_row)."""
     totals: dict[str, int] = defaultdict(int)
     minutes: list[int] = []
     counts: list[int] = []
@@ -230,7 +207,6 @@ def main() -> int:
         weights_name=args.weights_name,
         meta_name=args.meta_name,
     )
-    # emit a compact json trailer so callers can machine-parse without tailing logs
     print("[train_flow] RESULT " + json.dumps({
         "passed": bool(meta["passed"]),
         "ks_p_count": float(meta["ks_p_count"]),

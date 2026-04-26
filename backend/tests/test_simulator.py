@@ -183,6 +183,63 @@ def test_find_reusable_prefers_prewarmed_idle_over_free():
     assert picked is prewarmed
 
 
+def test_waiting_queue_absorbs_into_latency():
+    """With max_wait_ms > 0 and a single container, an arrival for a different
+    function while the first is still busy waits in the global FIFO queue
+    instead of being rejected. Wait time is part of the second request's
+    end-to-end latency.
+    """
+    trace = [
+        RequestArrival(timestamp_ms=0, function_id="f", execution_time_ms=100.0),
+        RequestArrival(timestamp_ms=1, function_id="g", execution_time_ms=50.0),
+    ]
+    policy = Policy(
+        keep_alive_s=60.0, max_containers=1, prewarm_threshold=1.0, max_wait_ms=10_000.0
+    )
+    res = run(trace, policy, rng=np.random.default_rng(0))
+    assert res.rejected == 0, res
+    assert res.cold_starts == 2, res
+    assert len(res.latencies_ms) == 2
+    # Second arrival waited at least until the first cold-start + exec finished.
+    assert res.latencies_ms[1] > 100.0, res.latencies_ms
+
+
+def test_waiting_queue_rejects_on_timeout():
+    """With a small max_wait_ms, a queued request whose wait would exceed
+    the cap is rejected once the simulator notices (next container free-up)."""
+    trace = [
+        RequestArrival(timestamp_ms=0, function_id="f", execution_time_ms=100.0),
+        RequestArrival(timestamp_ms=1, function_id="g", execution_time_ms=50.0),
+    ]
+    policy = Policy(
+        keep_alive_s=60.0, max_containers=1, prewarm_threshold=1.0, max_wait_ms=5.0
+    )
+    res = run(trace, policy, rng=np.random.default_rng(0))
+    assert res.rejected == 1, res
+    assert res.cold_starts == 1, res
+    assert len(res.latencies_ms) == 1
+
+
+def test_max_wait_zero_matches_loss_queue_baseline():
+    """Default Policy() has max_wait_ms=0.0 → loss-queue behaviour. Explicit
+    max_wait_ms=0.0 must produce byte-identical metrics."""
+    trace = [
+        RequestArrival(timestamp_ms=0, function_id="f", execution_time_ms=100.0),
+        RequestArrival(timestamp_ms=1, function_id="g", execution_time_ms=100.0),
+        RequestArrival(timestamp_ms=2, function_id="h", execution_time_ms=100.0),
+    ]
+    p_default = Policy(keep_alive_s=60.0, max_containers=1, prewarm_threshold=1.0)
+    p_explicit = Policy(
+        keep_alive_s=60.0, max_containers=1, prewarm_threshold=1.0, max_wait_ms=0.0
+    )
+    a = run(trace, p_default, rng=np.random.default_rng(0))
+    b = run(trace, p_explicit, rng=np.random.default_rng(0))
+    assert a.rejected == b.rejected
+    assert a.warm_hits == b.warm_hits
+    assert a.cold_starts == b.cold_starts
+    assert a.latencies_ms == b.latencies_ms
+
+
 def test_find_reusable_falls_back_to_free_then_stale_idle():
     free = _Container(id=0, state=ContainerState.FREE)
     stale_warm = _Container(id=1, state=ContainerState.IDLE, function_id="x")

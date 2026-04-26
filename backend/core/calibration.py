@@ -1,13 +1,3 @@
-"""
-Cold-start phase distributions, p5-p95 in milliseconds.
-
-Calibrated from 805,745 real cold-start events (Huawei SIR-Lab 2025,
-Region 5, 31 consecutive days). Source values are frozen here so the
-library has no runtime dependency on raw traces.
-
-Reference: Lin et al. 2025 (huawei2025dataset).
-"""
-
 from __future__ import annotations
 
 ColdStartPhases = dict[str, tuple[float, float]]

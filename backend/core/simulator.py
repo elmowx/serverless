@@ -1,17 +1,7 @@
-"""
-Discrete-event simulator for a G/G/k/k serverless loss queue.
-
-One call:
-    run(trace, policy, rng=np.random.default_rng(seed)) -> SimResult
-
-Models k function containers with a 4-state FSM
-(FREE, WARMING_UP, BUSY, IDLE) and function affinity on warm hits.
-Requests are rejected when no container slot is available.
-"""
-
 from __future__ import annotations
 
 import heapq
+from collections import deque
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -47,12 +37,6 @@ def _transition(
     stats: ContainerStats,
     timeline: list[list[TimelineSegment]] | None = None,
 ) -> None:
-    """Close out time in the current state, then flip to ``new_state``.
-
-    If ``timeline`` is provided, also append the closing interval as a
-    :class:`TimelineSegment` to ``timeline[c.id]``. Zero-length segments are
-    skipped to avoid visual clutter in the Gantt chart.
-    """
     dt = max(0.0, now_ms - c.state_since_ms)
     if c.state is ContainerState.FREE:
         stats.free_ms += dt
@@ -98,18 +82,6 @@ def _find_warming(containers: list[_Container], function_id: str) -> _Container 
 
 
 def _find_reusable(containers: list[_Container]) -> _Container | None:
-    """Pick a container for a cold start.
-
-    Preference order:
-    1. A *prewarmed* IDLE container (state=IDLE, function_id=""). Using it
-       lets us pay only the function-specific cold-start phases
-       (``assign_prewarmed`` mode: code_loading + function_init) rather
-       than the full stack. If we skipped prewarmed slots here in favour
-       of FREE, the prewarm mechanism would be effectively wasted.
-    2. A FREE slot (full cold start).
-    3. Recycle any IDLE container belonging to another function (also
-       full cold start; this evicts the previously-kept-warm image).
-    """
     for c in containers:
         if c.state is ContainerState.IDLE and c.function_id == "":
             return c
@@ -188,32 +160,6 @@ def run(
     phases: ColdStartPhases | None = None,
     record_timeline: bool = False,
 ) -> SimResult:
-    """Discrete-event simulation of the G/G/k/k loss queue.
-
-    Semantics worth pinning down (all baseline experiments in the final
-    report rely on these):
-
-    - **Per-function pending queue for in-flight warmups.** When a request
-      arrives for a function whose container is currently ``WARMING_UP``
-      (cold start not yet finished), we queue the new request behind that
-      warmup. It attaches to the container and waits for ``WARM_UP_DONE``,
-      after which it is processed in FIFO order. This matches the AWS Lambda
-      and Azure Functions published behaviour (provisioned concurrency / init phase).
-      If no such container exists, we try to pick a ``FREE``/``IDLE``
-      container and pay a cold start on it. If none are available, the request
-      is counted as ``rejected``.
-    - **Prewarming is opportunistic.** On every arrival we check if the
-      fraction of busy containers has crossed ``prewarm_threshold``;
-      if so and a ``FREE`` container exists, we kick off a cold start on
-      it with a synthetic ``__prewarm__`` function id. The container
-      then enters ``IDLE`` and is reusable on the next eligible arrival
-      (same or different function — the simulator doesn't condition
-      prewarm on function id, see §Method in the report).
-    - **Keep-alive ticks are lazy** via stale ``expiry_token`` checks: a
-      container that gets reclaimed (IDLE → BUSY → IDLE) increments its
-      token, and any previously-scheduled ``CONTAINER_EXPIRY`` event
-      with a stale token is silently ignored when popped.
-    """
     if rng is None:
         rng = np.random.default_rng(0)
     if phases is None:
@@ -243,7 +189,69 @@ def run(
         )
 
     pending_cold: dict[int, int] = {}
+    waiting: deque[tuple[float, int]] = deque()
     now = 0.0
+
+    def _start_cold(req_idx: int, container: _Container, now_ms: float) -> None:
+        nonlocal cold_starts
+        _release_idle(container, now_ms, idle_acc)
+        is_prewarmed = (
+            container.state is ContainerState.IDLE and container.function_id == ""
+        )
+        mode = "assign_prewarmed" if is_prewarmed else "full"
+        cold_ms = _sample_cold_start_ms(rng, phases, mode=mode)
+        _transition(container, ContainerState.WARMING_UP, now_ms, stats_list[container.id], timeline)
+        container.function_id = trace[req_idx].function_id
+        stats_list[container.id].cold_starts += 1
+        pending_cold[container.id] = req_idx
+        heapq.heappush(
+            queue,
+            SimEvent(
+                time_ms=now_ms + cold_ms,
+                kind=EventType.SPIN_UP_DONE,
+                container_id=container.id,
+                request_idx=req_idx,
+            ),
+        )
+        cold_starts += 1
+
+    def _drain_waiting(now_ms: float) -> None:
+        nonlocal rejected, warm_hits
+        while waiting and (now_ms - waiting[0][0]) > policy.max_wait_ms:
+            waiting.popleft()
+            rejected += 1
+        while waiting:
+            arrival_ms, req_idx = waiting[0]
+            req_w = trace[req_idx]
+            warm_c = _find_warm(containers, req_w.function_id)
+            if warm_c is not None:
+                waiting.popleft()
+                _release_idle(warm_c, now_ms, idle_acc)
+                _transition(warm_c, ContainerState.BUSY, now_ms, stats_list[warm_c.id], timeline)
+                stats_list[warm_c.id].warm_hits += 1
+                warm_hits += 1
+                heapq.heappush(
+                    queue,
+                    SimEvent(
+                        time_ms=now_ms + req_w.execution_time_ms,
+                        kind=EventType.EXECUTION_DONE,
+                        container_id=warm_c.id,
+                        request_idx=req_idx,
+                    ),
+                )
+                continue
+            warming_c = _find_warming(containers, req_w.function_id)
+            if warming_c is not None:
+                waiting.popleft()
+                warming_c.pending_queue.append(req_idx)
+                stats_list[warming_c.id].warm_hits += 1
+                warm_hits += 1
+                continue
+            reuse_c = _find_reusable(containers)
+            if reuse_c is None:
+                break
+            waiting.popleft()
+            _start_cold(req_idx, reuse_c, now_ms)
 
     while queue:
         ev = heapq.heappop(queue)
@@ -274,27 +282,13 @@ def run(
                     warm_hits += 1
                 else:
                     reuse = _find_reusable(containers)
-                    if reuse is None:
+                    if reuse is not None:
+                        _start_cold(ev.request_idx, reuse, now)
+                    elif policy.max_wait_ms <= 0:
                         rejected += 1
                     else:
-                        _release_idle(reuse, now, idle_acc)
-                        is_prewarmed = (reuse.state is ContainerState.IDLE and reuse.function_id == "")
-                        mode = "assign_prewarmed" if is_prewarmed else "full"
-                        cold_ms = _sample_cold_start_ms(rng, phases, mode=mode)
-                        _transition(reuse, ContainerState.WARMING_UP, now, stats_list[reuse.id], timeline)
-                        reuse.function_id = req.function_id
-                        stats_list[reuse.id].cold_starts += 1
-                        pending_cold[reuse.id] = ev.request_idx
-                        heapq.heappush(
-                            queue,
-                            SimEvent(
-                                time_ms=now + cold_ms,
-                                kind=EventType.SPIN_UP_DONE,
-                                container_id=reuse.id,
-                                request_idx=ev.request_idx,
-                            ),
-                        )
-                        cold_starts += 1
+                        waiting.append((now, ev.request_idx))
+            _drain_waiting(now)
             _maybe_prewarm(containers, stats_list, queue, now, policy, rng, phases, timeline)
 
         elif ev.kind is EventType.SPIN_UP_DONE:
@@ -302,6 +296,7 @@ def run(
             if ev.request_idx == -1:
                 c.function_id = ""
                 _enter_idle(c, now, queue, policy.keep_alive_s, stats_list[c.id], timeline)
+                _drain_waiting(now)
             else:
                 req = trace[ev.request_idx]
                 _transition(c, ContainerState.BUSY, now, stats_list[c.id], timeline)
@@ -320,7 +315,7 @@ def run(
             c = containers[ev.container_id]
             req = trace[ev.request_idx]
             latencies.append(now - req.timestamp_ms)
-            
+
             if c.pending_queue:
                 next_req_idx = c.pending_queue.pop(0)
                 next_req = trace[next_req_idx]
@@ -335,6 +330,7 @@ def run(
                 )
             else:
                 _enter_idle(c, now, queue, policy.keep_alive_s, stats_list[c.id], timeline)
+                _drain_waiting(now)
 
         elif ev.kind is EventType.CONTAINER_EXPIRY:
             c = containers[ev.container_id]
@@ -342,13 +338,14 @@ def run(
                 idle_acc[0] += max(0.0, now - c.idle_since_ms)
                 _transition(c, ContainerState.FREE, now, stats_list[c.id], timeline)
                 c.function_id = ""
+                _drain_waiting(now)
+
+    rejected += len(waiting)
+    waiting.clear()
 
     for c in containers:
         if c.state is ContainerState.IDLE:
             idle_acc[0] += max(0.0, now - c.idle_since_ms)
-        # Close the final interval so the last in-flight state is visible
-        # in the Gantt chart, even though no "new state" follows. We pass
-        # the same state so aggregate stats stay correct.
         _transition(c, c.state, now, stats_list[c.id], timeline)
 
     return SimResult(

@@ -1,14 +1,3 @@
-"""
-Thin SQLite layer for benchmark runs.
-
-One table: `runs`. One row per submission. JSON blob for `config` so the
-schema doesn't have to track every UI tweak.
-
-We intentionally do NOT use SQLAlchemy or any ORM — this is a local single-
-file DB backing a short-lived demo app. A raw sqlite3 wrapper is cleaner and
-easier for the course reviewer to read.
-"""
-
 from __future__ import annotations
 
 import json

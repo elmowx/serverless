@@ -1,16 +1,3 @@
-"""
-Async job orchestration.
-
-A `JobManager` owns a bounded pool (semaphore) of concurrent sandbox runs. The
-actual sandbox executes in a thread via `asyncio.to_thread` — the subprocess
-itself is blocking, which is fine since we cap concurrency and each run has a
-hard timeout.
-
-On completion, the manager augments the raw `result.json` written by
-`worker.runner` with baseline comparisons and convergence data, producing
-`report.json` consumed by `GET /runs/{id}/report`.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -45,6 +32,7 @@ class JobManager:
         w_cost: float,
         seed: int,
         max_containers_cap: int | None = None,
+        max_wait_ms: float = 0.0,
         timeout_s: int = DEFAULT_TIMEOUT_S,
     ) -> None:
         prepare_job_dir(
@@ -56,6 +44,7 @@ class JobManager:
             w_cost=w_cost,
             seed=seed,
             max_containers_cap=max_containers_cap,
+            max_wait_ms=max_wait_ms,
         )
         task = asyncio.create_task(
             self._run(
@@ -65,6 +54,7 @@ class JobManager:
                 w_latency=w_latency,
                 w_cost=w_cost,
                 seed=seed,
+                max_wait_ms=max_wait_ms,
                 timeout_s=timeout_s,
             )
         )
@@ -79,6 +69,7 @@ class JobManager:
         w_latency: float,
         w_cost: float,
         seed: int,
+        max_wait_ms: float,
         timeout_s: int,
     ) -> None:
         async with self._sem:
@@ -105,6 +96,7 @@ class JobManager:
                     w_latency=w_latency,
                     w_cost=w_cost,
                     seed=seed,
+                    max_wait_ms=max_wait_ms,
                 )
             self._store.mark_finished(
                 run_id,

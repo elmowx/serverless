@@ -1,15 +1,3 @@
-"""
-FastAPI app: `uvicorn api.main:app --reload`.
-
-Endpoints (see OpenAPI at /docs):
-    POST  /runs                       enqueue optimizer run
-    GET   /runs/{run_id}              status + minimal info
-    GET   /runs/{run_id}/events       SSE stream of progress lines + final event
-    GET   /runs/{run_id}/report       final report JSON (only after status=done)
-    GET   /datasets/available         {poisson: true, flow: bool}
-    GET   /datasets/preview           first N arrivals of a synthetic sample
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -39,11 +27,6 @@ from datagen.flow import FlowGenerator
 RUNS_ROOT = Path(tempfile.gettempdir()) / "serverless_blackbox_runs"
 DB_PATH = RUNS_ROOT / "runs.sqlite"
 DATASETS_ROOT = RUNS_ROOT / "datasets"
-
-# Hard cap on trace size fed into a single run. The simulator is O(n log n)
-# in trace length (heap operations); at ~2 µs per arrival this is ~1 s of
-# compute per objective call. Combined with budget=200 that is up to 200 s
-# of work, comfortably under the sandbox's wall-clock timeout.
 MAX_ARRIVALS = 500_000
 
 SourceLiteral = Literal["poisson", "flow", "upload"]
@@ -58,20 +41,14 @@ class RunConfig(BaseModel):
     budget: int = Field(30, ge=1, le=200)
     w_latency: float = Field(0.5, ge=0.0, le=1.0)
     w_cost: float = Field(0.5, ge=0.0, le=1.0)
-    # Upper bound the optimizer is allowed to set for Policy.max_containers.
-    # Exposed so users running on smaller fleets can narrow the search space
-    # without editing backend BOUNDS. The hard ceiling (30) comes from the
-    # simulator's calibration range and is enforced by Field(le=...).
     max_containers_cap: int = Field(30, ge=1, le=30)
-    dataset_id: str | None = None  # if set with source=flow, use user-trained weights
+    max_wait_ms: float = Field(30_000.0, ge=0.0, le=600_000.0)
+    dataset_id: str | None = None
 
     @field_validator("source")
     @classmethod
     def flow_available(cls, v: str, info: Any) -> str:  # type: ignore[override]
         if v == "flow":
-            # Only require shipped weights when the run does NOT reference a
-            # user-trained dataset. Availability of per-dataset weights is
-            # re-checked inside _build_trace.
             if not FlowGenerator.is_available() and not (info.data or {}).get("dataset_id"):
                 raise ValueError("flow source requested but weights not shipped")
         return v
@@ -244,6 +221,7 @@ async def create_run(
         w_cost=cfg.w_cost,
         seed=cfg.seed,
         max_containers_cap=cfg.max_containers_cap,
+        max_wait_ms=cfg.max_wait_ms,
     )
     return {"run_id": run_id, "status": "queued", "n_arrivals": len(trace)}
 
@@ -270,11 +248,6 @@ def get_run(run_id: str) -> dict[str, Any]:
 
 
 def _load_or_refresh_report(run: Run) -> dict[str, Any]:
-    """Return the run's report, regenerating it on-disk if the cached copy
-    was produced by an older runner (missing the per-baseline latency/cost
-    decomposition that the current UI depends on). Uses the pickled trace
-    and config stored next to result.json — cheap because baseline sims are
-    already part of ``build_report``."""
     import pickle
 
     job_dir = Path(run.job_dir)

@@ -1,26 +1,3 @@
-"""
-Standalone CLI that runs the entire black-box pipeline without the frontend
-or FastAPI app. Useful for:
-  * CI / scripted benchmarks (emits JSON on ``--json``).
-  * Debugging optimizer code against the shipped simulator.
-  * Docker-only environments where we want to ``docker compose run --rm
-    backend python -m cli run ...`` and read the report in stdout.
-
-It reuses the exact same worker and reporting code as the HTTP layer
-(`api.sandbox`, `worker.runner`, `api.reporting`) so CLI and API results are
-bit-for-bit comparable given the same inputs.
-
-Usage (happy path)::
-
-    python -m cli run \\
-        --solution examples/user_optimizer_random.py \\
-        --source poisson --intensity 0.5 --duration-minutes 60 \\
-        --n-functions 10 --budget 30 --seed 0
-
-Use ``--json`` for pipe-friendly output (only the final report.json is
-written to stdout; live progress is suppressed).
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -190,7 +167,6 @@ def _stream_and_wait_subprocess(
                         continue
                     print(_format_trial_line(row, budget), flush=True)
             time.sleep(0.1)
-        # drain any remaining lines emitted between last tick and exit
         new_lines, sent = _read_new_lines(progress_path, sent)
         if not json_mode:
             for ln in new_lines:
@@ -214,9 +190,6 @@ def _stream_and_wait_subprocess(
 
 
 def _run_inline(*, job_dir: Path, progress_path: Path, budget: int, json_mode: bool) -> None:
-    """Run the optimizer in-process (no subprocess, no rlimits). Cheap for dev
-    and handy in tiny Docker-less loops. Live-prints by tailing the same
-    progress.jsonl file as the subprocess path — so output stays identical."""
     import threading
 
     from worker.runner import main as runner_main
@@ -291,6 +264,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         w_cost=args.w_cost,
         seed=args.seed,
         max_containers_cap=args.max_containers_cap,
+        max_wait_ms=args.max_wait_ms,
     )
     progress_path = job_dir / "progress.jsonl"
     progress_path.touch()
@@ -323,6 +297,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         w_latency=args.w_latency,
         w_cost=args.w_cost,
         seed=args.seed,
+        max_wait_ms=args.max_wait_ms,
     )
 
     if args.json:
@@ -361,6 +336,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         dest="max_containers_cap",
         help="upper bound the optimizer is allowed to pick for Policy.max_containers (1..30)",
+    )
+    r.add_argument(
+        "--max-wait-ms",
+        type=float,
+        default=30000.0,
+        dest="max_wait_ms",
+        help="hyperparameter: per-request waiting-queue timeout in ms (default 30000)",
     )
     r.add_argument("--trace-csv", default=None, dest="trace_csv", help="per-arrival CSV for --source upload")
     r.add_argument("--dataset-id", default=None, dest="dataset_id", help="user-trained flow weights id")

@@ -1,23 +1,3 @@
-"""
-Sandboxed child-process entry point.
-
-Invoked as (via `api.sandbox.run_sandbox`):
-    python <this> <job_dir>
-
-`job_dir` must contain, prepared by the parent:
-    solution.py    — user-uploaded optimizer (defines `optimize(objective, budget, bounds)`)
-    config.json    — {"budget": int, "w_latency": float, "w_cost": float, "seed": int}
-    trace.pkl      — pickle of list[RequestArrival]
-
-The runner writes back into the same dir:
-    progress.jsonl — one line per wrapped objective call (for SSE + cat animation)
-    result.json    — final verdict, always written (never silently exits)
-
-Any failure is reported as `{"ok": false, "error": str, "traceback": str}`; the
-process still exits 0 if the failure was a user-code bug (so the sandbox can
-surface it cleanly), and exits 1 only for setup errors we can't recover from.
-"""
-
 from __future__ import annotations
 
 import importlib.util
@@ -66,9 +46,6 @@ def main(argv: list[str]) -> int:
         _write_result({"ok": False, "error": f"setup failed: {exc}", "traceback": traceback.format_exc(), "n_trials": 0})
         return 1
 
-    # Per-run override of the max_containers search bound. The schema
-    # clamps it to [1, BOUNDS[1][1]] on the API side; we clamp again
-    # defensively because config.json may come from the CLI too.
     cap_raw = config.get("max_containers_cap")
     if cap_raw is None:
         k_hi = BOUNDS[1][1]
@@ -86,6 +63,7 @@ def main(argv: list[str]) -> int:
         w_cost=float(config.get("w_cost", 0.5)),
         seed=int(config.get("seed", 0)),
         bounds=bounds,
+        max_wait_ms=float(config.get("max_wait_ms", 0.0)),
     )
     budget = int(config["budget"])
 

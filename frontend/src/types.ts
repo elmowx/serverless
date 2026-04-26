@@ -47,6 +47,7 @@ export interface RunConfig {
   w_latency: number;
   w_cost: number;
   max_containers_cap: number;
+  max_wait_ms: number;
   dataset_id?: string | null;
 }
 
@@ -162,7 +163,7 @@ export interface Report {
   convergence: ConvergencePoint[];
   pareto_points: ParetoPoint[];
   container_timeline?: ContainerTimeline | null;
-  config: { w_latency: number; w_cost: number; seed: number };
+  config: { w_latency: number; w_cost: number; seed: number; max_wait_ms?: number };
   normalization?: {
     l_max: number;
     c_max: number;

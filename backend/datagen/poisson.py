@@ -1,21 +1,3 @@
-"""
-Parametric synthetic trace generator.
-
-    PoissonGenerator().generate(intensity, duration_minutes, n_functions, seed)
-
-Models a non-homogeneous Poisson process with a diurnal sinusoidal rate
-envelope, Zipf-weighted function popularity, and exponential execution
-times with median ~64 ms (matching the Azure 2019 aggregate in Checkpoint 1).
-
-Intensity slider maps to a base rate lambda_base:
-    intensity=0.0 -> 1 RPS (low)
-    intensity=0.5 -> 25 RPS (medium)
-    intensity=1.0 -> 50 RPS (bursty)
-
-Diurnal multiplier keeps peak/trough ratio at 4:1 (peak at hour 12,
-trough at hour 0) regardless of intensity.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -41,7 +23,7 @@ def _lambda_at(hour: float, intensity: float) -> float:
 
 def _lambda_max(intensity: float) -> float:
     base = LAMBDA_MIN + (LAMBDA_MAX - LAMBDA_MIN) * float(np.clip(intensity, 0.0, 1.0))
-    return base * 1.6  # max of 1.0 + 0.6 * sin(...)
+    return base * 1.6
 
 
 def _zipf_weights(n: int) -> np.ndarray:
@@ -74,18 +56,14 @@ class PoissonGenerator:
         duration_seconds = duration_minutes * 60.0
         expected_total = lam_max * duration_seconds
 
-        # Generate homogeneous Poisson process with rate lam_max
         n_candidates = rng.poisson(expected_total)
         if n_candidates == 0:
             return []
 
-        # Uniformly distribute candidates in [0, duration_seconds]
         candidate_times_s = rng.uniform(0.0, duration_seconds, size=n_candidates)
         candidate_times_s.sort()
 
-        # Lewis thinning: accept with probability lambda(t) / lambda_max
         hours = candidate_times_s / 3600.0
-        # Vectorized lambda_at calculation
         base = LAMBDA_MIN + (LAMBDA_MAX - LAMBDA_MIN) * float(np.clip(intensity, 0.0, 1.0))
         modulations = 1.0 + 0.6 * np.sin(2.0 * math.pi * hours / 24.0 - math.pi / 2.0)
         lams = base * modulations

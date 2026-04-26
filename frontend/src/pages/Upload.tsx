@@ -23,6 +23,7 @@ export default function Upload() {
   const [budget, setBudget] = useState(30);
   const [wLatency, setWLatency] = useState(0.5);
   const [maxContainersCap, setMaxContainersCap] = useState(30);
+  const [maxWaitMs, setMaxWaitMs] = useState(30000);
   const [traceCsv, setTraceCsv] = useState<File | null>(null);
   const [fitCsv, setFitCsv] = useState<File | null>(null);
   const [fitResult, setFitResult] = useState<FitFlowResponse | null>(null);
@@ -87,6 +88,7 @@ export default function Upload() {
       w_latency: wLatency,
       w_cost: wCost,
       max_containers_cap: maxContainersCap,
+      max_wait_ms: maxWaitMs,
       dataset_id: source === "fit_flow" ? fitResult?.dataset_id ?? null : null,
     };
     try {
@@ -283,6 +285,20 @@ export default function Upload() {
                   The score is still normalized against the full 1..30 range, so objective values stay comparable across runs with different caps.
                 </>
               }
+          />
+          <NumberInput
+            label="Max wait (ms)"
+            min={0}
+            max={600000}
+            step={100}
+            value={maxWaitMs}
+            onChange={setMaxWaitMs}
+            hint="Per-request waiting-queue timeout. Requests wait in a FIFO queue if no container is free; if they wait longer than this, they're dropped (counted in p_loss). Default 30000 (30 s). Set 0 to disable the queue (pure loss-queue)."
+            help={
+              <>
+                Wait time is included in the request's total latency, so it shows up in CVaR_0.99 and the loss function automatically. This knob is a hyperparameter — your optimizer never sees it.
+              </>
+            }
           />
           <Slider
             label={`w_latency = ${wLatency.toFixed(2)} / w_cost = ${wCost.toFixed(2)}`}

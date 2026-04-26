@@ -1,18 +1,3 @@
-"""
-User-supplied trace → conditional RealNVP trained in the background.
-
-Flow:
-    POST /datasets/fit-flow with a per-arrival CSV (same schema as the run
-    "upload" source). We aggregate to per-(minute, function_id) counts and
-    mean exec times, then shell out to `datagen.train_flow` with a small
-    lightweight config so it fits in ~30s on a laptop. Weights land under
-    `datasets/{dataset_id}/` so a later `POST /runs` can reference the
-    dataset_id with `source=flow`.
-
-A dataset_id is sha256(csv_bytes)[:16] — identical uploads reuse cached
-weights without retraining.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -40,7 +25,6 @@ class FitFlowError(RuntimeError):
 
 
 def aggregate_to_minutes(csv_path: Path, out_path: Path) -> int:
-    """Bucket per-arrival events into (minute, function_id) rows. Returns row count."""
     arrivals = parse_user_csv(csv_path)
     buckets: dict[tuple[int, str], list[float]] = defaultdict(list)
     for a in arrivals:

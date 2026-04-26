@@ -1,13 +1,3 @@
-"""
-Parse a user-provided CSV of request events into a list[RequestArrival].
-
-Expected columns (header required, order-insensitive):
-    timestamp_ms, function_id, execution_time_ms
-
-Returns events sorted by timestamp. Raises ValueError with a human-readable
-message on any schema or value problem so the API layer can surface it.
-"""
-
 from __future__ import annotations
 
 import csv

@@ -1,21 +1,3 @@
-"""
-Parent-side orchestrator that runs `worker.runner` under resource limits.
-
-Guarantees:
-  * User code executes in a subprocess, not the API process.
-  * Memory, CPU, fd, and (where supported) proc limits are applied via
-    `preexec_fn` before the child exec's Python.
-  * A hard wall-clock timeout kills the whole process group.
-  * Env is scrubbed — only PATH, HOME, LANG/LC_ALL, PYTHONPATH remain.
-  * The runner always writes result.json if it can; the sandbox surfaces
-    whether it was written, exit code, and captured stdout/stderr tails.
-
-Known limitations (documented, not fixed here):
-  * Network isolation requires Docker or Linux netns; on bare macOS we rely on
-    users not uploading optimizers that phone home. This is acceptable for the
-    course demo and called out in the final report's Limitations section.
-"""
-
 from __future__ import annotations
 
 import json
@@ -43,13 +25,6 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 
 
 def _preexec() -> None:
-    """Runs in the forked child between fork() and exec(). Apply rlimits here.
-
-    macOS (Apple Silicon especially) rejects RLIMIT_AS / RLIMIT_DATA / RLIMIT_RSS
-    with EPERM even for the process's own descendants. We try them individually
-    and skip silently — on Linux/Docker (production deploy target) they all take
-    effect; on bare-macOS dev only CPU + fd + proc cap, and Docker handles memory.
-    """
     mem_limits = [
         getattr(resource, "RLIMIT_AS", None),
         getattr(resource, "RLIMIT_DATA", None),
@@ -97,6 +72,7 @@ def prepare_job_dir(
     w_cost: float = 0.5,
     seed: int = 0,
     max_containers_cap: int | None = None,
+    max_wait_ms: float = 0.0,
 ) -> None:
     job_dir.mkdir(parents=True, exist_ok=True)
     (job_dir / "solution.py").write_text(solution_source)
@@ -107,6 +83,7 @@ def prepare_job_dir(
         "w_latency": float(w_latency),
         "w_cost": float(w_cost),
         "seed": int(seed),
+        "max_wait_ms": float(max_wait_ms),
     }
     if max_containers_cap is not None:
         cfg["max_containers_cap"] = int(max_containers_cap)
@@ -118,12 +95,6 @@ def start_sandbox(
     *,
     python_executable: str | None = None,
 ) -> subprocess.Popen:
-    """Spawn the sandbox subprocess and return it without waiting.
-
-    Callers (CLI live-streamer) typically tail ``job_dir / "progress.jsonl"``
-    while the process runs, then call :func:`wait_sandbox` to collect the
-    final ``SandboxResult``.
-    """
     env = {
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "HOME": str(job_dir),
@@ -203,8 +174,6 @@ def run_sandbox(
     timeout_s: int = DEFAULT_WALL_TIMEOUT_S,
     python_executable: str | None = None,
 ) -> SandboxResult:
-    """Synchronous helper: start + wait. Used by the HTTP layer where live
-    streaming comes from the separate SSE endpoint tailing ``progress.jsonl``."""
     proc = start_sandbox(job_dir, python_executable=python_executable)
     return wait_sandbox(proc, job_dir, timeout_s=timeout_s)
 

@@ -37,27 +37,14 @@ class SimEvent:
 
 @dataclass
 class Policy:
-    """
-    Three-dimensional decision space for the optimizer.
-
-    keep_alive_s: how long an idle container stays warm (seconds).
-    max_containers: pool size k (G/G/k/k loss queue).
-    prewarm_threshold: busy-ratio that triggers proactive warming; 1.0 disables.
-    """
-
     keep_alive_s: float = 600.0
     max_containers: int = 10
     prewarm_threshold: float = 1.0
+    max_wait_ms: float = 0.0
 
 
 @dataclass
 class ContainerStats:
-    """Per-container occupancy breakdown accumulated over the simulated window.
-
-    Fractions are over the wall-clock span from t=0 to the last event. Counts
-    are exact events assigned to this container during the run.
-    """
-
     container_id: int
     busy_ms: float = 0.0
     idle_ms: float = 0.0
@@ -106,10 +93,6 @@ class ContainerStats:
 
 @dataclass
 class TimelineSegment:
-    """A single contiguous state interval for a container. Only populated when
-    ``run()`` is called with ``record_timeline=True``; aggregate occupancy is
-    always available on :class:`ContainerStats`."""
-
     state: str
     t0_ms: float
     t1_ms: float
@@ -150,15 +133,6 @@ class SimResult:
 
     @property
     def cvar99_latency_ms(self) -> float:
-        """Empirical CVaR_0.99: mean of the top ceil(n * 0.01) latencies.
-
-        Previously computed as the mean of xs[round(0.99*(n-1)):], which
-        follows the quantile-7 index convention and averages the top
-        ~1-2 % of samples depending on n. The strict empirical CVaR
-        definition requires exactly the top (1-alpha) mass, which for
-        alpha=0.99 with n samples is ceil(n * 0.01) samples (at least
-        one).
-        """
         if not self.latencies_ms:
             return 0.0
         xs = sorted(self.latencies_ms)

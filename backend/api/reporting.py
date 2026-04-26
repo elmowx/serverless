@@ -1,11 +1,3 @@
-"""
-Shared report assembly used by both the API (`api.jobs`) and the CLI
-(`cli.py`). Reads the runner's raw `result.json` + `progress.jsonl`, replays
-the 5 baselines for comparison, and writes `report.json` into the job dir.
-
-Kept free of FastAPI / asyncio imports so the CLI can call it directly.
-"""
-
 from __future__ import annotations
 
 import json
@@ -31,6 +23,7 @@ def build_report(
     w_latency: float,
     w_cost: float,
     seed: int,
+    max_wait_ms: float = 0.0,
 ) -> dict[str, Any]:
     result = json.loads((job_dir / "result.json").read_text())
     best_metrics = result.get("best_metrics") or {}
@@ -69,7 +62,6 @@ def build_report(
     convergence = _parse_convergence(job_dir / "progress.jsonl")
     pareto = _pareto_points(job_dir / "progress.jsonl", trace, w_latency, w_cost, seed)
 
-    # Inject latency_term/cost_term on best_metrics if missing (older runners).
     if "latency_term" not in best_metrics and best_x is not None:
         best_sim = obj.evaluate(best_x)
         lat_term, cost_term = obj.terms(best_sim)
@@ -91,7 +83,12 @@ def build_report(
         "convergence": convergence,
         "pareto_points": pareto,
         "container_timeline": timeline_payload,
-        "config": {"w_latency": w_latency, "w_cost": w_cost, "seed": seed},
+        "config": {
+            "w_latency": w_latency,
+            "w_cost": w_cost,
+            "seed": seed,
+            "max_wait_ms": max_wait_ms,
+        },
         "normalization": result.get("normalization")
         or {"l_max": obj.l_max, "c_max": obj.c_max, "w_latency": w_latency, "w_cost": w_cost},
     }
@@ -104,6 +101,7 @@ def write_report(
     w_latency: float,
     w_cost: float,
     seed: int,
+    max_wait_ms: float = 0.0,
 ) -> dict[str, Any]:
     report = build_report(
         job_dir=job_dir,
@@ -111,6 +109,7 @@ def write_report(
         w_latency=w_latency,
         w_cost=w_cost,
         seed=seed,
+        max_wait_ms=max_wait_ms,
     )
     (job_dir / "report.json").write_text(json.dumps(report, indent=2))
     return report
@@ -143,16 +142,6 @@ def _best_policy_timeline(
     trace: list[RequestArrival],
     seed: int,
 ) -> dict[str, Any] | None:
-    """Re-simulate the best policy once with ``record_timeline=True`` so the
-    report can render a Gantt chart of container states over real time. We
-    cap the number of containers to keep the payload small (the full pool
-    can be large and rows past the first ~20 are mostly redundant).
-
-    Each per-container track may also be further thinned to
-    ``TIMELINE_MAX_SEGMENTS`` segments by greedily merging neighbouring same-
-    state runs, which preserves the visual shape of the Gantt chart while
-    bounding the JSON size for very long simulations.
-    """
     if best_x is None:
         return None
     policy = policy_from_vector(best_x)
@@ -193,9 +182,6 @@ def _merge_same_state(segments):
 
 
 def _thin_segments(segments, max_n: int):
-    """If a track has more than ``max_n`` segments, drop the shortest ones by
-    merging them into the longer neighbour. Preserves total duration and
-    visual footprint of the long phases."""
     if len(segments) <= max_n:
         return segments
     segs = list(segments)

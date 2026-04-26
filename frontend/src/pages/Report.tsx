@@ -455,12 +455,16 @@ export default function Report() {
 
       {norm && (
         <section className="text-[10px] text-muted border-t border-ink/10 pt-3">
+          <span className="font-serif-warm uppercase">Run config · </span>
+          w_latency = {norm.w_latency.toFixed(2)} · w_cost ={" "}
+          {norm.w_cost.toFixed(2)} · seed = {report.config.seed} · max_wait_ms ={" "}
+          {report.config.max_wait_ms ?? 0}
+          <br />
           <span className="font-serif-warm uppercase">Normalization anchors · </span>
           L_max = {norm.l_max.toFixed(0)} ms (from the{" "}
           <span className="font-serif-warm">minimal</span> baseline) · C_max ={" "}
           {norm.c_max.toFixed(0)} cont·s (from the{" "}
-          <span className="font-serif-warm">generous</span> baseline) · seed ={" "}
-          {report.config.seed}
+          <span className="font-serif-warm">generous</span> baseline)
         </section>
       )}
 
