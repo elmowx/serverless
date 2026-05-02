@@ -3,7 +3,6 @@ import { Link } from "react-router-dom";
 export default function Landing() {
   return (
     <div className="flex flex-col gap-12">
-      {/* Hero */}
       <section className="pt-6 pb-12 md:pt-8 md:pb-16 border-b border-ink/15">
         <div className="flex flex-col gap-6 max-w-3xl">
           <p className="font-serif-warm text-[13px] uppercase tracking-[0.2em] text-muted">
@@ -40,7 +39,6 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* Three feature cards */}
       <section className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <Card
           title="Black-box objective"

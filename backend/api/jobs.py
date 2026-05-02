@@ -59,6 +59,7 @@ class JobManager:
             )
         )
         self._tasks[run_id] = task
+        task.add_done_callback(lambda _t, _id=run_id: self._tasks.pop(_id, None))
 
     async def _run(
         self,

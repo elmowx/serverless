@@ -25,7 +25,7 @@ function niceYDomain(points: ConvergencePoint[]): [number, number] {
   const maxY = Math.max(...points.map((p) => Math.max(p.y, p.best_so_far)));
   if (!Number.isFinite(maxY) || maxY <= 0) return [0, 1];
   const padded = maxY * 1.1;
-  const ceil = Math.ceil(padded * 2) / 2; // round up to next 0.5
+  const ceil = Math.ceil(padded * 2) / 2;
   return [0, Math.max(ceil, 0.5)];
 }
 
@@ -52,8 +52,6 @@ export default function ConvergenceChart({
   const xTicks = fixedXTicks(Math.max(budget, 1));
   const yDomain = niceYDomain(data);
   const yTickArr = yTicks(yDomain);
-  // n_containers lives on a separate scale (≤ 30); round up to the next
-  // multiple of 5 so the right axis has clean ticks.
   const maxContainers = data.reduce(
     (m, p) => (typeof p.n_containers === "number" ? Math.max(m, p.n_containers) : m),
     0,

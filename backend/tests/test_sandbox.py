@@ -139,9 +139,6 @@ def test_network_syscall_is_not_seccomp_blocked(tmp_path: Path, small_trace):
     assert res.status == "user_error"
     assert res.result is not None and res.result["ok"] is False
     err = (res.result.get("error") or "").lower()
-    # Exact errno wording varies by OS/libc; on Linux+macOS both hit one
-    # of these. The point is: the failure is a normal Python exception
-    # from the socket, not a sandbox-level kill.
     assert any(
         tok in err
         for tok in ("refused", "timed out", "timeout", "unreachable", "connection")

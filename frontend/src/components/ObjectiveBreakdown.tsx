@@ -1,15 +1,5 @@
 import type { BaselineResult, BestMetrics } from "../types";
 
-/**
- * Horizontal stacked bars showing f(x) = w_lat·latency_term + w_cost·cost_term
- * for YOUR BEST + each baseline. Makes the cost vs latency trade-off visible:
- * a narrow orange segment means low latency cost, a narrow teal segment means
- * few container·seconds burned.
- *
- * Falls back to reconstructing terms from p99/idle and the normalization
- * constants for older reports whose baselines were written before the
- * decomposition was added to `reporting.py`.
- */
 
 type Props = {
   bestY: number;
@@ -76,9 +66,6 @@ export default function ObjectiveBreakdown({
     }),
   ];
 
-  // Scale bars by max weighted (lat+cost), not raw y — otherwise a row whose
-  // terms are missing (y came from elsewhere) would stretch the axis and
-  // collapse everyone else's visible bars.
   const maxWeighted = Math.max(
     ...rows.map((r) => wLatency * r.latencyTerm + wCost * r.costTerm),
     1e-6,

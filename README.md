@@ -8,19 +8,32 @@ HSE coursework "Benchmarking Black-Box for Serverless Function Scheduling and Co
 
 ## Quickstart
 
-### Backend
+### Docker Compose (recommended)
+
+```bash
+docker compose up --build
+# backend:  http://127.0.0.1:8000/docs
+# frontend: http://127.0.0.1:8080
+```
+
+Required on macOS to enforce memory limits (`RLIMIT_AS` no-ops on Darwin).
+
+### Local dev (Linux/macOS)
 
 ```bash
 cd backend
 python3.11 -m venv .venv
 source .venv/bin/activate
 
-pip install torch scipy scikit-learn numpy optuna
-pip install --no-deps probaforms
-pip install -e ".[api,dev]"
+pip install --no-deps "probaforms>=0.1"
+pip install -e ".[api,datagen,dev]"
 
 uvicorn api.main:app --host 127.0.0.1 --port 8000
 ```
+
+`probaforms` ships transitive pins (pandas, numpy, torch) that conflict with our
+stack, so it must be installed first with `--no-deps`. The Dockerfile follows
+the same pattern; see `Dockerfile.backend` and DEPLOYMENT.md.
 
 Swagger at [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs).
 
@@ -33,16 +46,6 @@ npm run dev    # http://127.0.0.1:5173
 ```
 
 The Vite dev server proxies `/api/*` to port 8000.
-
-### Docker Compose
-
-```bash
-docker compose up --build
-# backend:  http://127.0.0.1:8000/docs
-# frontend: http://127.0.0.1:8080
-```
-
-Required on macOS to enforce memory limits (`RLIMIT_AS` no-ops on Darwin).
 
 ---
 

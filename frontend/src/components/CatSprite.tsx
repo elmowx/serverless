@@ -1,13 +1,5 @@
 import { useId } from "react";
 
-/**
- * Pixel cat spritesheet renderer.
- *
- * Source sheet: 352×1696, a 22×106 grid of 16×16 cells. Each cat pose is
- * actually 32×32 px (2×2 cells). We render a 32×32 viewport anchored at
- * `row` (the TOP row in the 16-px fine grid; must be even) and step
- * horizontally 32 px per frame.
- */
 export type CatColor = 1 | 2 | 3;
 
 export interface CatSpriteProps {

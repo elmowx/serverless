@@ -88,9 +88,6 @@ def test_cli_user_error_returns_nonzero(tmp_path: Path) -> None:
     bad_solution.write_text("def not_optimize(a, b, c):\n    pass\n")
     out_dir = tmp_path / "run"
     buf_err = io.StringIO()
-    # The CLI reports failures via ``SystemExit("...")``. --no-sandbox path
-    # raises from the inline runner; subprocess path raises from the
-    # wait-and-check. Use --no-sandbox so the assertion works cross-platform.
     with pytest.raises(SystemExit) as excinfo, redirect_stdout(buf_err):
         cli_main(
             _common_args(bad_solution, out_dir, extra=["--no-sandbox"])
@@ -112,17 +109,13 @@ def test_cli_subprocess_sandbox_path(tmp_path: Path) -> None:
     assert exit_code == 0
     report = json.loads((out_dir / "report.json").read_text())
     assert report["best_x"] is not None
-    # The sandbox subprocess should have written progress.jsonl with >= 1 line.
     progress = (out_dir / "progress.jsonl").read_text().strip().splitlines()
     assert len(progress) >= 1
     last = json.loads(progress[-1])
-    # Full payload from the updated runner is present.
     assert "container_summary" in last
     assert "p99_latency_ms" in last
 
 
-# Sanity: we import from the backend package directly, the example file must
-# exist at the documented location.
 def test_example_solution_present() -> None:
     assert EXAMPLE_SOLUTION.is_file(), f"missing example at {EXAMPLE_SOLUTION}"
     assert sys.version_info >= (3, 11)

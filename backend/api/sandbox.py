@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import pickle
 import resource
@@ -22,6 +23,14 @@ PROC_LIMIT = 32
 DEFAULT_WALL_TIMEOUT_S = 90
 
 BACKEND_DIR = Path(__file__).resolve().parents[1]
+
+_log = logging.getLogger(__name__)
+if sys.platform == "darwin":
+    _log.warning(
+        "RLIMIT_AS is a no-op on Darwin; sandbox memory cap %.0f MB is not enforced "
+        "outside Linux/Docker. CPU and wall-clock limits still apply.",
+        MEM_LIMIT_BYTES / (1024 * 1024),
+    )
 
 
 def _preexec() -> None:

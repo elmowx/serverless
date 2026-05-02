@@ -45,8 +45,6 @@ def test_deterministic_with_fixed_seed():
 
 
 def test_warm_hit_on_repeated_function_id():
-    # Same function, spaced so first call finishes before the second arrives,
-    # but well before keep-alive expires.
     trace = [
         RequestArrival(timestamp_ms=0, function_id="f", execution_time_ms=10.0),
         RequestArrival(timestamp_ms=10_000, function_id="f", execution_time_ms=10.0),
@@ -59,7 +57,6 @@ def test_warm_hit_on_repeated_function_id():
 
 
 def test_single_container_capacity_causes_rejections_for_different_functions():
-    # Tight bursts with k=1 for DIFFERENT functions: second request arrives before first completes.
     trace = [
         RequestArrival(timestamp_ms=0, function_id="f", execution_time_ms=100.0),
         RequestArrival(timestamp_ms=1, function_id="g", execution_time_ms=100.0),
@@ -78,13 +75,10 @@ def test_cold_start_latency_bounded_by_phase_sum():
     hi = sum(hi for _, hi in HUAWEI_P5_P95.values())
     assert len(res.latencies_ms) == 1
     total = res.latencies_ms[0]
-    # latency = cold + exec; exec=1 ms
     assert lo + 1.0 <= total <= hi + 1.0
 
 
 def test_keep_alive_expiry_returns_container_to_free_pool():
-    # Two calls to different functions, spaced > keep_alive_s apart: second
-    # should still succeed (the first container expired, re-used for cold).
     trace = [
         RequestArrival(timestamp_ms=0, function_id="f", execution_time_ms=5.0),
         RequestArrival(timestamp_ms=120_000, function_id="g", execution_time_ms=5.0),
@@ -143,15 +137,12 @@ def _result(latencies: list[float]) -> SimResult:
 
 
 def test_cvar99_averages_exactly_top_one_percent():
-    # n=100 -> ceil(100*0.01)=1 -> tail is just the max.
     res = _result([float(i) for i in range(100)])
     assert res.cvar99_latency_ms == 99.0
 
-    # n=1000 -> ceil(1000*0.01)=10 -> mean of top 10 = mean(990..999)=994.5.
     res = _result([float(i) for i in range(1000)])
     assert res.cvar99_latency_ms == 994.5
 
-    # n=50 -> ceil(50*0.01)=1 -> single max.
     res = _result([float(i) for i in range(50)])
     assert res.cvar99_latency_ms == 49.0
 
@@ -167,7 +158,6 @@ def test_prewarm_increases_warm_hit_rate():
     with_prewarm = Policy(keep_alive_s=120.0, max_containers=8, prewarm_threshold=0.5)
     a = run(trace, no_prewarm, rng=np.random.default_rng(0))
     b = run(trace, with_prewarm, rng=np.random.default_rng(0))
-    # Prewarming should never reduce warm hits given the same trace.
     assert b.warm_hits >= a.warm_hits
 
 
@@ -200,7 +190,6 @@ def test_waiting_queue_absorbs_into_latency():
     assert res.rejected == 0, res
     assert res.cold_starts == 2, res
     assert len(res.latencies_ms) == 2
-    # Second arrival waited at least until the first cold-start + exec finished.
     assert res.latencies_ms[1] > 100.0, res.latencies_ms
 
 

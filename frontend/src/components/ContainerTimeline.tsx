@@ -1,16 +1,6 @@
 import { useMemo } from "react";
 import type { ContainerTimeline } from "../types";
 
-/**
- * Gantt chart of container FSM states over the real simulated timeline of
- * the best policy. One row per container; segment colours echo the rest of
- * the report (orange = BUSY, where latency accrues; teal = IDLE, where
- * idle_seconds accrue; tan = WARMING_UP; paper-beige = FREE).
- *
- * Uses HTML/div positioning with percentage widths so rectangles stretch
- * cleanly with the container width (SVG with preserveAspectRatio="none"
- * distorts text; using real div widths avoids the problem entirely).
- */
 
 type Props = {
   timeline: ContainerTimeline;
@@ -54,7 +44,6 @@ export default function ContainerTimeline({ timeline }: Props) {
       </div>
 
       <div className="flex">
-        {/* Left gutter: container labels */}
         <div className="flex flex-col gap-1 pr-2 border-r border-ink/10 text-[10px] font-serif-warm text-muted tabular-nums shrink-0">
           {tracks.map((t) => (
             <div
@@ -68,9 +57,7 @@ export default function ContainerTimeline({ timeline }: Props) {
           <div className="h-5" />
         </div>
 
-        {/* Plot area */}
         <div className="flex-1 relative">
-          {/* Rows */}
           <div className="flex flex-col gap-1">
             {tracks.map((t) => (
               <div
@@ -100,7 +87,6 @@ export default function ContainerTimeline({ timeline }: Props) {
             ))}
           </div>
 
-          {/* Vertical tick lines overlaid on all rows */}
           <div
             className="absolute inset-0 pointer-events-none"
             aria-hidden="true"
@@ -114,7 +100,6 @@ export default function ContainerTimeline({ timeline }: Props) {
             ))}
           </div>
 
-          {/* X-axis tick labels */}
           <div className="relative h-5 mt-1 text-[10px] font-serif-warm text-muted tabular-nums">
             {ticks.values.map((v) => (
               <span

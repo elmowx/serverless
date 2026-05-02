@@ -1,10 +1,5 @@
 import { useState, type ReactNode } from "react";
 
-/**
- * A small "(?)" pill with a hover/focus tooltip. No portal gymnastics,
- * no libraries — just a positioned div. Good for inline glossary help
- * next to form labels and metric pills.
- */
 export default function HelpIcon({
   children,
   side = "top",

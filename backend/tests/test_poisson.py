@@ -28,7 +28,6 @@ def test_intensity_monotonicity():
 
 
 def test_diurnal_pattern_visible():
-    # 24 hours at medium intensity: peak hours (~12h) should dwarf trough hours (~0h).
     gen = PoissonGenerator()
     trace = gen.generate(intensity=0.5, duration_minutes=1440, n_functions=10, seed=7)
     per_hour = np.zeros(24, dtype=int)

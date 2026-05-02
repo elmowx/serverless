@@ -46,10 +46,6 @@ export default function Running() {
     cold_start_rate: t.cold_start_rate,
   }));
 
-  // UI status hint: the backend /runs/:id endpoint says "running" until the
-  // sandbox subprocess exits, even after the last trial was emitted. Show a
-  // friendlier "wrapping up" when we've seen budget trials but the stream has
-  // not yet sent a `done` event.
   const statusHint =
     done?.status ??
     (nTrials >= budget ? "wrapping up" : run?.status ?? "…");
@@ -176,7 +172,7 @@ export default function Running() {
             Run ended: {done.status}
           </div>
           {done.error && <pre className="whitespace-pre-wrap">{done.error}</pre>}
-          
+
           {done.status === "timeout" && (
             <div className="mt-3 bg-red-100/50 p-3 rounded border border-red-200 text-red-800">
               <strong className="block mb-1 font-serif-warm text-[13px]">Time Limit Exceeded</strong>

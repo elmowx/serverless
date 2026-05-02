@@ -82,6 +82,5 @@ def test_objective_respects_custom_bounds():
     narrow = [(1.0, 1800.0), (1.0, 3.0), (0.1, 1.0)]
     obj = BlackBoxObjective(trace, seed=0, bounds=narrow)
     res = obj.evaluate([600.0, 30.0, 1.0])
-    # Under the cap the simulator sees at most k=3 containers.
     assert len(res.container_summary) <= 3
     assert obj.bounds[1] == (1.0, 3.0)

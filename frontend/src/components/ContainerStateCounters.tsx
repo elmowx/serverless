@@ -3,13 +3,6 @@ import CatSprite, { type CatColor } from "./CatSprite";
 import { STATE_ANIM } from "./catAnimations";
 import type { ContainerState, ContainerSummary } from "../types";
 
-/**
- * Live counter per FSM state. Each card shows one pixel cat (posed for
- * that state) and a big number: the time-weighted count of containers
- * in that state during the most recent trial. Replaces the old
- * PixelCatWorkers display (one sprite per container), which didn't scale
- * beyond ~10 containers and didn't communicate the state distribution.
- */
 
 type StateMeta = {
   state: ContainerState;

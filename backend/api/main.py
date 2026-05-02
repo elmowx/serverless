@@ -8,16 +8,15 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
-from pydantic import BaseModel, Field, field_validator
+from fastapi.responses import Response
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sse_starlette.sse import EventSourceResponse
 
 from api.flow_training import FitFlowError, fit_flow
 from api.jobs import JobManager
 from api.pdf import render_report_pdf
-from api.reporting import write_report
 from api.store import Run, RunStore
 from core.types import RequestArrival
 from datagen import PoissonGenerator, parse_user_csv
@@ -52,6 +51,152 @@ class RunConfig(BaseModel):
             if not FlowGenerator.is_available() and not (info.data or {}).get("dataset_id"):
                 raise ValueError("flow source requested but weights not shipped")
         return v
+
+
+class DatasetsAvailable(BaseModel):
+    poisson: bool
+    flow: bool
+    upload: bool
+    fit_flow: bool
+
+
+class FitFlowResult(BaseModel):
+    dataset_id: str
+    cached: bool
+    passed: bool
+    ks_p_count: float
+    ks_p_exec: float
+    n_aggregated_rows: int
+
+
+class PreviewArrival(BaseModel):
+    timestamp_ms: int
+    function_id: str
+    execution_time_ms: float
+
+
+class PreviewResponse(BaseModel):
+    n_total: int
+    preview: list[PreviewArrival]
+
+
+class RunCreated(BaseModel):
+    run_id: str
+    status: str
+    n_arrivals: int
+
+
+class RunSummary(BaseModel):
+    id: str
+    status: str
+    created_at: str
+    finished_at: str | None = None
+
+
+class RunDetail(RunSummary):
+    exit_code: int | None = None
+    error: str | None = None
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class _Permissive(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+
+class ContainerSummaryEntry(_Permissive):
+    container_id: int
+    busy_frac: float
+    idle_frac: float
+    free_frac: float
+    warming_frac: float
+    cold_starts: int
+    warm_hits: int
+
+
+class BestMetrics(_Permissive):
+    p99_latency_ms: float
+    avg_latency_ms: float | None = None
+    cold_start_rate: float
+    p_loss: float
+    idle_seconds: float
+    warm_hits: int | None = None
+    cold_starts: int | None = None
+    latency_term: float | None = None
+    cost_term: float | None = None
+    container_summary: list[ContainerSummaryEntry] | None = None
+
+
+class BaselinePolicy(BaseModel):
+    keep_alive_s: float
+    max_containers: int
+    prewarm_threshold: float
+
+
+class BaselineResult(_Permissive):
+    name: str
+    policy: BaselinePolicy
+    y: float
+    metrics: BestMetrics
+
+
+class ConvergencePoint(_Permissive):
+    trial: int
+    y: float
+    best_so_far: float
+    n_containers: int | None = None
+    cold_start_rate: float | None = None
+
+
+class ParetoPoint(BaseModel):
+    x: list[float]
+    p99_latency_ms: float
+    idle_seconds: float
+
+
+class TimelineSegmentDTO(BaseModel):
+    state: str
+    t0_ms: float
+    t1_ms: float
+
+
+class ContainerTrack(BaseModel):
+    container_id: int
+    segments: list[TimelineSegmentDTO]
+
+
+class ContainerTimelineDTO(BaseModel):
+    total_ms: float
+    n_containers: int
+    shown_containers: int
+    tracks: list[ContainerTrack]
+
+
+class ReportConfig(BaseModel):
+    w_latency: float
+    w_cost: float
+    seed: int
+    max_wait_ms: float | None = None
+
+
+class Normalization(BaseModel):
+    l_max: float
+    c_max: float
+    w_latency: float
+    w_cost: float
+
+
+class ReportResponse(_Permissive):
+    best_x: list[float]
+    best_y: float
+    best_metrics: BestMetrics
+    n_trials: int
+    elapsed_s: float
+    baselines: list[BaselineResult]
+    convergence: list[ConvergencePoint]
+    pareto_points: list[ParetoPoint]
+    container_timeline: ContainerTimelineDTO | None = None
+    config: ReportConfig
+    normalization: Normalization | None = None
 
 
 def _dataset_weights(dataset_id: str) -> tuple[Path, Path]:
@@ -115,7 +260,7 @@ app.add_middleware(
 )
 
 
-@app.get("/datasets/available")
+@app.get("/datasets/available", response_model=DatasetsAvailable)
 def datasets_available() -> dict[str, Any]:
     return {
         "poisson": True,
@@ -125,7 +270,7 @@ def datasets_available() -> dict[str, Any]:
     }
 
 
-@app.post("/datasets/fit-flow")
+@app.post("/datasets/fit-flow", response_model=FitFlowResult)
 async def fit_flow_endpoint(
     trace_csv: UploadFile = File(..., description="per-arrival CSV to train a conditional flow on"),
 ) -> dict[str, Any]:
@@ -140,7 +285,7 @@ async def fit_flow_endpoint(
     return result
 
 
-@app.get("/datasets/preview")
+@app.get("/datasets/preview", response_model=PreviewResponse)
 def datasets_preview(
     source: SourceLiteral = "poisson",
     intensity: float = 0.5,
@@ -171,7 +316,7 @@ def datasets_preview(
     }
 
 
-@app.post("/runs")
+@app.post("/runs", response_model=RunCreated)
 async def create_run(
     solution: UploadFile = File(..., description="python file defining optimize(...)"),
     config: str = Form(..., description="JSON-encoded RunConfig"),
@@ -233,7 +378,21 @@ def _run_or_404(store: RunStore, run_id: str) -> Run:
     return run
 
 
-@app.get("/runs/{run_id}")
+@app.get("/runs", response_model=list[RunSummary])
+def list_runs(limit: int = Query(20, ge=1, le=200)) -> list[dict[str, Any]]:
+    runs = app.state.store.list_recent(limit=limit)
+    return [
+        {
+            "id": r.id,
+            "status": r.status,
+            "created_at": r.created_at,
+            "finished_at": r.finished_at,
+        }
+        for r in runs
+    ]
+
+
+@app.get("/runs/{run_id}", response_model=RunDetail)
 def get_run(run_id: str) -> dict[str, Any]:
     run = _run_or_404(app.state.store, run_id)
     return {
@@ -247,49 +406,19 @@ def get_run(run_id: str) -> dict[str, Any]:
     }
 
 
-def _load_or_refresh_report(run: Run) -> dict[str, Any]:
-    import pickle
-
-    job_dir = Path(run.job_dir)
-    report_path = job_dir / "report.json"
+def _load_report(run: Run) -> dict[str, Any]:
+    report_path = Path(run.job_dir) / "report.json"
     if not report_path.exists():
         raise HTTPException(500, "report.json missing — report assembly failed")
-
-    report = json.loads(report_path.read_text())
-    baselines = report.get("baselines") or []
-    stale = (
-        not baselines
-        or any(
-            "latency_term" not in (b.get("metrics") or {})
-            or "cost_term" not in (b.get("metrics") or {})
-            for b in baselines
-        )
-    )
-    if not stale:
-        return report
-
-    trace_path = job_dir / "trace.pkl"
-    config_path = job_dir / "config.json"
-    if not trace_path.exists() or not config_path.exists():
-        return report
-    with trace_path.open("rb") as fh:
-        trace = pickle.load(fh)
-    cfg = json.loads(config_path.read_text())
-    return write_report(
-        job_dir=job_dir,
-        trace=trace,
-        w_latency=float(cfg.get("w_latency", 0.5)),
-        w_cost=float(cfg.get("w_cost", 0.5)),
-        seed=int(cfg.get("seed", 0)),
-    )
+    return json.loads(report_path.read_text())
 
 
-@app.get("/runs/{run_id}/report")
-def get_report(run_id: str) -> JSONResponse:
+@app.get("/runs/{run_id}/report", response_model=ReportResponse)
+def get_report(run_id: str) -> dict[str, Any]:
     run = _run_or_404(app.state.store, run_id)
     if run.status != "done":
         raise HTTPException(409, f"report not available; run status={run.status}")
-    return JSONResponse(_load_or_refresh_report(run))
+    return _load_report(run)
 
 
 @app.get("/runs/{run_id}/report.pdf")
@@ -297,7 +426,7 @@ def get_report_pdf(run_id: str) -> Response:
     run = _run_or_404(app.state.store, run_id)
     if run.status != "done":
         raise HTTPException(409, f"report not available; run status={run.status}")
-    report = _load_or_refresh_report(run)
+    report = _load_report(run)
     pdf_bytes = render_report_pdf(report, run_id)
     return Response(
         content=pdf_bytes,
@@ -306,35 +435,59 @@ def get_report_pdf(run_id: str) -> Response:
     )
 
 
+async def _tail_progress(
+    progress_path: Path,
+    poll_status: "callable[[], tuple[str | None, str | None, int | None]]",
+    sleep_s: float = 0.2,
+) -> AsyncIterator[dict[str, Any]]:
+    fh = None
+    carry = ""
+    try:
+        while True:
+            if fh is None and progress_path.exists():
+                fh = progress_path.open("r")
+            if fh is not None:
+                chunk = fh.read()
+                if chunk:
+                    carry += chunk
+                    while "\n" in carry:
+                        line, carry = carry.split("\n", 1)
+                        if line.strip():
+                            yield {"event": "trial", "data": line}
+            status, error, exit_code = poll_status()
+            if status is None:
+                return
+            if status in {"done", "user_error", "crashed", "timeout"}:
+                if fh is not None:
+                    chunk = fh.read()
+                    if chunk:
+                        carry += chunk
+                    for line in carry.splitlines():
+                        if line.strip():
+                            yield {"event": "trial", "data": line}
+                    carry = ""
+                yield {
+                    "event": "done",
+                    "data": json.dumps(
+                        {"status": status, "error": error, "exit_code": exit_code}
+                    ),
+                }
+                return
+            await asyncio.sleep(sleep_s)
+    finally:
+        if fh is not None:
+            fh.close()
+
+
 @app.get("/runs/{run_id}/events")
 async def get_events(run_id: str) -> EventSourceResponse:
     run = _run_or_404(app.state.store, run_id)
     progress_path = Path(run.job_dir) / "progress.jsonl"
 
-    async def stream() -> AsyncIterator[dict[str, Any]]:
-        sent = 0
-        while True:
-            if progress_path.exists():
-                lines = progress_path.read_text().splitlines()
-                for raw in lines[sent:]:
-                    if raw.strip():
-                        yield {"event": "trial", "data": raw}
-                sent = len(lines)
-            current = app.state.store.get(run_id)
-            if current is None:
-                return
-            if current.status in {"done", "user_error", "crashed", "timeout"}:
-                yield {
-                    "event": "done",
-                    "data": json.dumps(
-                        {
-                            "status": current.status,
-                            "error": current.error,
-                            "exit_code": current.exit_code,
-                        }
-                    ),
-                }
-                return
-            await asyncio.sleep(0.2)
+    def _poll() -> tuple[str | None, str | None, int | None]:
+        current = app.state.store.get(run_id)
+        if current is None:
+            return None, None, None
+        return current.status, current.error, current.exit_code
 
-    return EventSourceResponse(stream())
+    return EventSourceResponse(_tail_progress(progress_path, _poll))

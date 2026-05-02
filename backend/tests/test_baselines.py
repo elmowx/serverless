@@ -34,9 +34,6 @@ from datagen import PoissonGenerator
 EXPECTED_KEYS = {"aggressive", "balanced", "generous", "prewarm_heavy", "minimal"}
 
 
-# ---------- 1. Structure ----------
-
-
 def test_baseline_names_are_stable() -> None:
     """The public report contract (JSON + PDF) indexes baselines by these
     exact names. Renaming any of them is a breaking change for the UI."""
@@ -53,13 +50,8 @@ def test_each_baseline_is_a_policy_with_valid_fields() -> None:
         )
 
 
-# ---------- 2. Behavioural invariants ----------
-
-
 @pytest.fixture(scope="module")
 def poisson_trace():
-    # Intensity 0.3, 10 minutes, 4 functions: ~3.7k arrivals. Seeded — fully
-    # deterministic. Big enough for the p99 invariants to be stable.
     return PoissonGenerator().generate(
         intensity=0.3, duration_minutes=10, n_functions=4, seed=0
     )
@@ -104,9 +96,6 @@ def test_generous_has_no_losses(poisson_trace) -> None:
     assert gen.p_loss == 0.0
 
 
-# ---------- 3. Objective normalization ----------
-
-
 def test_normalization_is_non_degenerate(poisson_trace) -> None:
     """``BlackBoxObjective.__init__`` calibrates ``l_max`` (from ``minimal``)
     and ``c_max`` (from ``generous``). If either collapses to ~0 the
@@ -116,12 +105,8 @@ def test_normalization_is_non_degenerate(poisson_trace) -> None:
     obj = BlackBoxObjective(
         trace=poisson_trace, w_latency=0.5, w_cost=0.5, seed=0
     )
-    # l_max in ms (scaled to the worst of 5 reference policies) and c_max
-    # in container-seconds. Both should be well above their 1.0 floors.
     assert obj.l_max > 1.0
     assert obj.c_max > 1.0
-    # Ratio sanity: if the two normalizers are within 6 orders of
-    # magnitude we're not hitting numerical pathologies.
     assert 1e-6 < obj.l_max / obj.c_max < 1e6
 
 
@@ -139,9 +124,6 @@ def test_generous_policy_terms_are_finite_and_bounded(poisson_trace) -> None:
     lat_term, cost_term = obj.terms(sim)
     assert np.isfinite(lat_term) and lat_term >= 0.0
     assert np.isfinite(cost_term) and cost_term >= 0.0
-    # ``generous`` *is* the cost-baseline, so cost_term should be ~1 up
-    # to simulator noise (the normalizer sim and the recomputed sim use
-    # the same RNG seed, so they should agree exactly).
     assert abs(cost_term - 1.0) < 1e-6
 
 

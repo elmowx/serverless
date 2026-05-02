@@ -19,10 +19,8 @@ TIMEOUT_POLL_S = 45
 async def client():
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
-        # lifespan events don't fire with ASGITransport by default
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as _:
             pass
-        # manually trigger lifespan-equivalent setup
         from api.jobs import JobManager
         from api.main import DB_PATH, RUNS_ROOT
         from api.store import RunStore
@@ -175,7 +173,6 @@ async def test_report_404_before_done(client):
     files = {"solution": ("solution.py", EXAMPLE_OPTIMIZER, "text/x-python")}
     r = await client.post("/runs", files=files, data={"config": json.dumps(cfg)})
     run_id = r.json()["run_id"]
-    # Immediately poll /report — should 409 because status is queued or running
     rep = await client.get(f"/runs/{run_id}/report")
     assert rep.status_code in {404, 409}
     await _poll_until_terminal(client, run_id)

@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 
-from core.baselines import BASELINES
+from core.baselines import BASELINES, with_max_wait
 from core.objective import BlackBoxObjective, policy_from_vector
 from core.simulator import run as run_sim
 from core.types import RequestArrival
@@ -14,6 +14,39 @@ from core.types import RequestArrival
 
 TIMELINE_MAX_CONTAINERS = 20
 TIMELINE_MAX_SEGMENTS = 600
+
+
+def compute_baselines(
+    obj: BlackBoxObjective, max_wait_ms: float
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for name, raw in BASELINES.items():
+        bound = with_max_wait(raw, max_wait_ms)
+        sim = obj._simulate(bound)
+        x = [bound.keep_alive_s, float(bound.max_containers), bound.prewarm_threshold]
+        y = float(obj(np.asarray(x, dtype=float)))
+        lat_term, cost_term = obj.terms(sim)
+        out.append(
+            {
+                "name": name,
+                "policy": {
+                    "keep_alive_s": bound.keep_alive_s,
+                    "max_containers": bound.max_containers,
+                    "prewarm_threshold": bound.prewarm_threshold,
+                },
+                "y": y,
+                "metrics": {
+                    "p99_latency_ms": sim.p99_latency_ms,
+                    "avg_latency_ms": sim.avg_latency_ms,
+                    "cold_start_rate": sim.cold_start_rate,
+                    "p_loss": sim.p_loss,
+                    "idle_seconds": sim.idle_seconds,
+                    "latency_term": lat_term,
+                    "cost_term": cost_term,
+                },
+            }
+        )
+    return out
 
 
 def build_report(
@@ -29,48 +62,27 @@ def build_report(
     best_metrics = result.get("best_metrics") or {}
     best_x = result.get("best_x")
 
-    obj = BlackBoxObjective(
-        trace=trace, w_latency=w_latency, w_cost=w_cost, seed=seed
-    )
-    baselines: list[dict[str, Any]] = []
-    for name, policy in BASELINES.items():
-        sim = obj._simulate(policy)
-        x = [policy.keep_alive_s, float(policy.max_containers), policy.prewarm_threshold]
-        y = float(obj(np.asarray(x, dtype=float)))
-        lat_term, cost_term = obj.terms(sim)
-        baselines.append(
-            {
-                "name": name,
-                "policy": {
-                    "keep_alive_s": policy.keep_alive_s,
-                    "max_containers": policy.max_containers,
-                    "prewarm_threshold": policy.prewarm_threshold,
-                },
-                "y": y,
-                "metrics": {
-                    "p99_latency_ms": sim.p99_latency_ms,
-                    "avg_latency_ms": sim.avg_latency_ms,
-                    "cold_start_rate": sim.cold_start_rate,
-                    "p_loss": sim.p_loss,
-                    "idle_seconds": sim.idle_seconds,
-                    "latency_term": lat_term,
-                    "cost_term": cost_term,
-                },
-            }
+    baselines = result.get("baselines")
+    normalization = result.get("normalization") or {}
+    if baselines is None:
+        obj = BlackBoxObjective(
+            trace=trace,
+            w_latency=w_latency,
+            w_cost=w_cost,
+            seed=seed,
+            max_wait_ms=max_wait_ms,
         )
+        baselines = compute_baselines(obj, max_wait_ms)
+        if not normalization:
+            normalization = {
+                "l_max": obj.l_max,
+                "c_max": obj.c_max,
+                "w_latency": w_latency,
+                "w_cost": w_cost,
+            }
 
     convergence = _parse_convergence(job_dir / "progress.jsonl")
-    pareto = _pareto_points(job_dir / "progress.jsonl", trace, w_latency, w_cost, seed)
-
-    if "latency_term" not in best_metrics and best_x is not None:
-        best_sim = obj.evaluate(best_x)
-        lat_term, cost_term = obj.terms(best_sim)
-        best_metrics = {
-            **best_metrics,
-            "latency_term": lat_term,
-            "cost_term": cost_term,
-        }
-
+    pareto = _pareto_points(job_dir / "progress.jsonl")
     timeline_payload = _best_policy_timeline(best_x, trace, seed)
 
     return {
@@ -89,8 +101,7 @@ def build_report(
             "seed": seed,
             "max_wait_ms": max_wait_ms,
         },
-        "normalization": result.get("normalization")
-        or {"l_max": obj.l_max, "c_max": obj.c_max, "w_latency": w_latency, "w_cost": w_cost},
+        "normalization": normalization,
     }
 
 
@@ -201,26 +212,20 @@ def _thin_segments(segments, max_n: int):
     return segs
 
 
-def _pareto_points(
-    progress_path: Path,
-    trace: list[RequestArrival],
-    w_latency: float,
-    w_cost: float,
-    seed: int,
-) -> list[dict[str, Any]]:
+def _pareto_points(progress_path: Path) -> list[dict[str, Any]]:
     if not progress_path.exists():
         return []
-    obj = BlackBoxObjective(
-        trace=trace, w_latency=w_latency, w_cost=w_cost, seed=seed
-    )
     visited: list[tuple[list[float], float, float]] = []
     for ln in progress_path.read_text().splitlines():
         if not ln.strip():
             continue
         row = json.loads(ln)
-        x = row["x"]
-        sim = obj.evaluate(x)
-        visited.append((x, sim.p99_latency_ms, sim.idle_seconds))
+        x = row.get("x")
+        p99 = row.get("p99_latency_ms")
+        idle = row.get("idle_seconds")
+        if x is None or p99 is None or idle is None:
+            continue
+        visited.append((list(x), float(p99), float(idle)))
 
     visited.sort(key=lambda v: (v[1], v[2]))
     frontier: list[tuple[list[float], float, float]] = []

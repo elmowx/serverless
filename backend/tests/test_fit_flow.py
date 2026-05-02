@@ -112,15 +112,11 @@ def test_fit_flow_end_to_end_and_cached(tmp_path: Path):
     assert len(first["dataset_id"]) == 16
     assert first["n_aggregated_rows"] >= 1
     dataset_dir = datasets_root / first["dataset_id"]
-    # `passed` may be False on such a tiny model; weights are saved only on
-    # passed runs. Either way the metadata/aggregate must exist.
     assert (dataset_dir / "aggregated.csv").is_file()
     if first["passed"]:
         assert (dataset_dir / "flow.pt").is_file()
         assert (dataset_dir / "flow_meta.json").is_file()
 
-    # Second invocation with identical bytes: must short-circuit to cached
-    # only if the first run successfully persisted weights.
     if first["passed"]:
         second = asyncio.run(fit_flow(csv_bytes, datasets_root))
         assert second["cached"] is True

@@ -11,6 +11,7 @@ from typing import Any
 
 import numpy as np
 
+from core.baselines import BASELINES, with_max_wait
 from core.objective import BOUNDS, BlackBoxObjective
 
 
@@ -137,6 +138,36 @@ def main(argv: list[str]) -> int:
 
     final_metrics, final_y = obj.evaluate_with_y(state["best_x"])
     final_lat, final_cost = obj.terms(final_metrics)
+
+    max_wait_ms = float(config.get("max_wait_ms", 0.0))
+    baselines_payload: list[dict[str, Any]] = []
+    for name, raw_policy in BASELINES.items():
+        bound = with_max_wait(raw_policy, max_wait_ms)
+        sim = obj._simulate(bound)
+        x = [bound.keep_alive_s, float(bound.max_containers), bound.prewarm_threshold]
+        y = float(obj(np.asarray(x, dtype=float)))
+        lat_term, cost_term = obj.terms(sim)
+        baselines_payload.append(
+            {
+                "name": name,
+                "policy": {
+                    "keep_alive_s": bound.keep_alive_s,
+                    "max_containers": bound.max_containers,
+                    "prewarm_threshold": bound.prewarm_threshold,
+                },
+                "y": y,
+                "metrics": {
+                    "p99_latency_ms": sim.p99_latency_ms,
+                    "avg_latency_ms": sim.avg_latency_ms,
+                    "cold_start_rate": sim.cold_start_rate,
+                    "p_loss": sim.p_loss,
+                    "idle_seconds": sim.idle_seconds,
+                    "latency_term": lat_term,
+                    "cost_term": cost_term,
+                },
+            }
+        )
+
     _write_result(
         {
             "ok": True,
@@ -157,6 +188,7 @@ def main(argv: list[str]) -> int:
                 "cost_term": final_cost,
                 "container_summary": [c.to_dict() for c in final_metrics.container_summary],
             },
+            "baselines": baselines_payload,
             "normalization": {
                 "l_max": obj.l_max,
                 "c_max": obj.c_max,
